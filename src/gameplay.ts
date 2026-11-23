@@ -44,7 +44,6 @@ export function buildingRadius(kind: BuildingKind) {
 
 export function placementProblem(position: Position, kind: BuildingKind, height: number, buildings: BuildingPosition[], player: Position) {
   const radius = buildingRadius(kind);
-  if (Math.abs(position.x) >= 46 || Math.abs(position.z) >= 46) return 'Too close to the island edge';
   if (height <= 0.15) return 'Choose dry ground';
   if (Math.hypot(position.x - player.x, position.z - player.z) <= radius + 0.5) return 'Move away from the player';
   if (buildings.some(other => Math.hypot(position.x - other.x, position.z - other.z) < radius + buildingRadius(other.kind) + 0.25)) return 'Too close to another building';

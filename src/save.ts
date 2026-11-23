@@ -4,19 +4,22 @@ import type { NpcState } from './npc';
 import { safeSpawn } from './world';
 import { isAppearance, type CharacterAppearance } from './appearance';
 import { isWildlifeState, type AnimalState } from './wildlife';
+import { FLOOR_HEIGHT, isStructuralPiece, type StructuralPiece } from './construction';
 
 export interface SaveData {
-  version: 1 | 2 | 3 | 4 | 5;
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   seed: number;
   outfit: Outfit;
   appearance?: CharacterAppearance;
   playerName?: string;
   npcAppearanceSeed?: number;
   wildlife?: AnimalState[];
-  player: { x: number; z: number };
+  player: { x: number; z: number; y?: number };
   npc: { x: number; z: number };
   resources: Inventory;
   buildings: Array<{ kind: BuildingKind; x: number; z: number; y: number; rotation: number; charge?: number }>;
+  structures?: StructuralPiece[];
+  autoRoof?: boolean;
   terrain: Record<string, number>;
   depleted?: string[];
   npcState?: NpcState;
@@ -32,15 +35,17 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function isNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
-function isPosition(value: unknown) {
+function isPosition(value: unknown, limit: number) {
   return isObject(value) && isNumber(value.x) && isNumber(value.z)
-    && Math.abs(value.x) <= 48 && Math.abs(value.z) <= 48;
+    && Math.abs(value.x) <= limit && Math.abs(value.z) <= limit;
 }
 
 export function isSaveData(value: unknown): value is SaveData {
-  if (!isObject(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4 && value.version !== 5)
+  if (!isObject(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4 && value.version !== 5 && value.version !== 6 && value.version !== 7)
     || !isNumber(value.seed) || !safeSpawn(value.seed) || !['ember', 'sage', 'azure'].includes(String(value.outfit))
-    || !isPosition(value.player) || !isPosition(value.npc) || !isPosition(value.vehicle)
+    || !isPosition(value.player, value.version >= 6 ? 10000000 : 48)
+    || !isPosition(value.npc, value.version >= 6 ? 10000000 : 48)
+    || !isPosition(value.vehicle, value.version >= 6 ? 10000000 : 48)
     || !isObject(value.resources) || !isObject(value.terrain) || !isObject(value.calendar)
     || !Array.isArray(value.buildings)) return false;
   if (!['wood', 'stone', 'food', 'water'].every(k => isNumber(value.resources && (value.resources as Record<string, unknown>)[k]) && ((value.resources as Record<string, number>)[k] >= 0))) return false;
@@ -48,12 +53,41 @@ export function isSaveData(value: unknown): value is SaveData {
     || !isNumber(value.calendar.day) || value.calendar.day < 1
     || (value.calendar.speed !== undefined && (!isNumber(value.calendar.speed) || value.calendar.speed < 0.5 || value.calendar.speed > 8))) return false;
   if (!Object.entries(value.terrain).every(([key, n]) => /^-?\d+,-?\d+$/.test(key) && isNumber(n) && n >= -1.8 && n <= 0)) return false;
+  const coordinateLimit = value.version >= 6 ? 10000000 : 48;
   if (!value.buildings.every(b => isObject(b) && typeof b.kind === 'string'
-    && Object.hasOwn(buildingCosts, b.kind) && isPosition(b) && isNumber(b.y) && isNumber(b.rotation)
+    && Object.hasOwn(buildingCosts, b.kind) && isPosition(b, coordinateLimit) && isNumber(b.y) && isNumber(b.rotation)
     && (b.charge === undefined || (isNumber(b.charge) && b.charge >= 0 && b.charge <= 20)))) return false;
+  if (value.version === 7) {
+    if (!isObject(value.player) || !isNumber(value.player.y) || Math.abs(value.player.y) > 10000
+      || !Array.isArray(value.structures) || value.structures.length > 10000
+      || !value.structures.every(isStructuralPiece) || (value.autoRoof !== undefined && typeof value.autoRoof !== 'boolean')) return false;
+    const ids = new Set<string>();
+    const slots = new Set<string>();
+    const frames = new Set<string>();
+    const horizontalSurfaces = new Set<string>();
+    const doors: string[] = [];
+    for (const piece of value.structures as StructuralPiece[]) {
+      if (ids.has(piece.id)) return false;
+      ids.add(piece.id);
+      const location = `${piece.x},${piece.z},${piece.y.toFixed(4)},${piece.rotation}`;
+      const category = piece.kind === 'wall' || piece.kind === 'doorframe' ? 'edge' : piece.kind;
+      const slot = `${piece.x},${piece.z},${piece.y.toFixed(4)},${category},${category === 'edge' || category === 'door' ? piece.rotation : 0}`;
+      if (slots.has(slot)) return false;
+      slots.add(slot);
+      if (piece.kind === 'doorframe') frames.add(location);
+      if (piece.kind === 'door') doors.push(location);
+      if (piece.kind === 'floor' || piece.kind === 'roof') {
+        const height = piece.kind === 'roof' ? piece.y + FLOOR_HEIGHT : piece.y;
+        const surface = `${piece.x},${piece.z},${height.toFixed(4)}`;
+        if (horizontalSurfaces.has(surface)) return false;
+        horizontalSurfaces.add(surface);
+      }
+    }
+    if (doors.some(location => !frames.has(location))) return false;
+  } else if (value.structures !== undefined) return false;
   if (value.depleted !== undefined && (!Array.isArray(value.depleted) || !value.depleted.every(id => typeof id === 'string' && /^-?\d+,-?\d+$/.test(id)))) return false;
-  if ((value.version === 3 || value.version === 4 || value.version === 5) && (value.appearance === undefined || value.playerName === undefined || value.npcAppearanceSeed === undefined)) return false;
-  if ((value.version === 4 || value.version === 5) && value.wildlife === undefined) return false;
+  if (value.version >= 3 && (value.appearance === undefined || value.playerName === undefined || value.npcAppearanceSeed === undefined)) return false;
+  if (value.version >= 4 && value.wildlife === undefined) return false;
   if (value.wildlife !== undefined && !isWildlifeState(value.wildlife)) return false;
   if (value.appearance !== undefined && !isAppearance(value.appearance)) return false;
   if (value.playerName !== undefined && (typeof value.playerName !== 'string' || value.playerName.trim().length === 0 || value.playerName.length > 24)) return false;

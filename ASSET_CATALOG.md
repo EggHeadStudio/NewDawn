@@ -3,12 +3,12 @@
 All runtime geometry is original and procedural.
 
 ## Nature
-- Procedural low-poly terrain
+- Streamed procedural terrain with original starter region, broad continental forms, and desert and polar/snow colors
 - Conifer and broadleaf tree silhouettes with seasonal foliage
 - Instanced grass and flowers
 - Dodecahedron rocks
 - Berry bushes
-- Ocean, beach, grass, forest, and rocky biome materials
+- Ocean, beach, grass, forest, rock, desert and snow biome colors; no authored rivers or water-travel assets yet
 
 ## Characters
 - Articulated procedural player and seeded NPCs with shaped faces, layered clothing, cloaks, fur, braided hair, facial hair, hoods and helmets; ember, sage and azure palettes

@@ -1,6 +1,23 @@
-# Test report — Character and enemy upgrade
+# Test report — Batch 002 partial world milestone
 
-## Current character/enemy checks
+## Modular construction milestone
+
+- `npm.cmd test`: 50 tests passed in 11 files. Focused tests cover cell and edge snapping, costs, occupied slots, vertical placement, door frames and collision, partial refunds, walkable stair surfaces, irregular/connected room detection and version-7 save validation.
+- `npm.cmd run build`: TypeScript and the production build passed; Vite still reports the existing bundle-size warning.
+- `$env:PLAYWRIGHT_BROWSER_CHANNEL='msedge'; npm.cmd run test:e2e`: all 17 browser tests passed. They exercised player-placed floors at two levels, a frame and door, costs, a version-6 backup, door operation and reload on desktop and emulated mobile portrait and landscape. A fixture-assisted scenario walked up stairs and reloaded on an upper surface with the roof shader present; another completed and removed a partly fixture-built room, checking automatic roof costs and refunds. The room scenario was then extended and rerun successfully to check the roof after reload before demolition.
+- These are not a complete player-built, multi-level house journey: the room and stair tests used saved-state fixtures. Roof fading has not been visually assessed across multiple rooms and elevations; chunk revisit, long-session settlement performance, polar construction, and actual touch hardware remain unverified. Mining, processing, chemistry and the requested full progression do not exist yet.
+
+## Current world and save checks
+
+- `npm.cmd test`: 41 tests passed in 10 files. World tests check the original starter resource layout, adjacent chunk vertices, longitude periodicity, polar reflection, chunk unload/reload and limits, rebasing, terrain/resource persistence across a seam, and tree fading. Power tests include a network across longitude copies.
+- `npm.cmd run build`: TypeScript and the production build passed. Vite warns that the main bundle exceeds 500 kB.
+- `$env:PLAYWRIGHT_BROWSER_CHANNEL='msedge'; npm.cmd run test:e2e`: all 12 tests passed. These include four viewport sizes, building/camera/gameplay regressions, a version-5 settlement backup and migration, an actual walk beyond the former island boundary, a fixture-assisted longitude crossing with a nearby saved building, and JSON export/import with invalid-import rejection and backup.
+- A local production preview was tested through two builds: Later, Update Now, automatic restoration of the active game, and offline Continue all passed in an isolated Edge context. No IndexedDB clearing was involved. GitHub Actions deployment and physical installation were not tested.
+- Reviewed a normal-distance in-game screenshot after adding sightline tree fading. The character is less obscured in the reviewed scene, but the art remains simplified and other camera arrangements need testing.
+
+**Still needed:** a full end-to-end settlement/technology/transport journey, actual polar-crossing gameplay, long-duration traversal and performance profiling, full seam behavior for wildlife/NPCs, physical-device touch/performance checks, and deployed Pages validation. Technology, manufactured transport and additional wildlife do not yet exist.
+
+## Earlier character/enemy checks
 
 - `npm.cmd test`: 33 unit tests passed in 10 files. Added coverage for day-gated enemy selection, enemy model parts, melee/ranged intent, projectile movement/hits/obstructions/expiry and version 1–5 save validation.
 - `npm.cmd run build`: TypeScript and the production build passed; Vite still warns that the main bundle exceeds 500 kB.

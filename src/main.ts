@@ -15,6 +15,9 @@ import { animateAnimal, createAnimal, disposeAnimal } from './animal-assets';
 import { disposeCharacter } from './characters';
 import { chooseEnemyKind, enemyIntent, enemyProfiles, stepEnemyProjectile, type EnemyKind } from './enemies';
 import { enterImmersiveMode, setupPwa, UPDATE_RESUME_KEY } from './pwa';
+import { nearestPlanetPosition, planetCoordinates, PLANET_HEIGHT, PLANET_WIDTH } from './planet';
+import { addPiece, enclosedCells, FLOOR_HEIGHT, floorSurface, isEdgePiece, pieceBlocks, pieceCosts, pieceProblem, removePiece, snapPiece, type PieceKind, type PieceRotation, type StructuralPiece } from './construction';
+import { ConstructionRenderer, createPieceGhost } from './construction-render';
 import {
   createCharacter, createShelter, createStorage, createLamp, createGenerator,
   createWindTurbine, createVehicle, createEnemy, createBattery, createCable, type Outfit,
@@ -22,6 +25,11 @@ import {
 
 type Resources = Inventory;
 type BuildingRecord = PowerNode & { y: number; rotation: number };
+type BuildKind = BuildingKind | PieceKind;
+
+function isPieceKind(kind: BuildKind): kind is PieceKind {
+  return Object.hasOwn(pieceCosts, kind);
+}
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML = `
@@ -40,6 +48,9 @@ app.innerHTML = `
       <button id="customizeCharacter" class="secondary">CUSTOMIZE CHARACTER</button>
       <button id="newGame" class="primary">NEW WORLD</button>
       <button id="continueGame" class="secondary">CONTINUE</button>
+      <button id="exportSave" class="secondary">EXPORT SAVE</button>
+      <button id="importSave" class="secondary">IMPORT SAVE</button>
+      <input id="importSaveFile" class="hidden" type="file" accept=".json,application/json" aria-label="Choose a save file" />
       <button id="installGame" class="secondary hidden">INSTALL GAME</button>
       <p id="iosInstallHint" class="hidden">On iPhone or iPad, use Share → Add to Home Screen for the best full-screen experience.</p>
     </div>
@@ -72,6 +83,7 @@ app.innerHTML = `
   <div id="buildPanel" class="panel hidden" role="dialog" aria-labelledby="buildTitle"><h2 id="buildTitle">CHOOSE A BUILDING</h2><p>Select a structure to start placing it.</p><div id="buildCatalog"></div><button id="closeBuild" class="close" aria-label="Close build menu">×</button></div>
   <div id="placementToolbar" class="placement-toolbar hidden" aria-label="Building placement">
     <strong id="placementName"></strong><span id="placementStatus" role="status"></span><small id="placementCoordinates"></small>
+    <div id="floorControls" class="floor-controls hidden"><button id="floorDown" type="button" aria-label="Lower building level">−</button><span id="floorLevel">LEVEL 0</span><button id="floorUp" type="button" aria-label="Raise building level">+</button><button id="removePiece" type="button">REMOVE</button><label><input id="autoRoof" type="checkbox" checked> Auto roof</label></div>
     <div class="placement-buttons"><button id="rotateBuild" type="button">ROTATE <kbd>R</kbd></button><button id="changeBuild" type="button">CHANGE</button><button id="confirmBuild" type="button">PLACE</button><button id="cancelBuild" type="button">CANCEL</button></div>
     <small class="placement-hint">Point at ground · Click to place · Right-drag to orbit</small>
   </div>
@@ -83,6 +95,7 @@ app.innerHTML = `
     <label class="setting">Rotation speed <input id="cameraSpeed" type="range" min="0.3" max="2" step="0.1" value="1"></label>
     <label class="setting">Smoothing <input id="cameraSmoothing" type="range" min="2" max="12" step="1" value="5"></label>
     <label class="setting">Game speed <input id="gameSpeed" type="range" min="0.5" max="8" step="0.1" value="2.2"></label>
+    <label class="setting">Terrain distance <input id="renderDistance" type="range" min="1" max="3" step="1" value="1"></label>
     <p>Game version: ${__APP_VERSION__}</p><button id="exitFullscreen" class="secondary">EXIT FULLSCREEN</button>
     <button id="resumeGame" class="primary">RESUME</button><button id="saveGame" class="secondary">SAVE WORLD</button><button id="returnMenu" class="secondary">MAIN MENU</button></div>
   <div id="updatePanel" class="update-panel hidden" role="dialog" aria-labelledby="updateTitle"><strong id="updateTitle">New Dawn Update Available</strong><p>Save your world and restart to play the new version.</p><div><button id="applyUpdate" class="primary">UPDATE NOW</button><button id="laterUpdate" class="secondary">LATER</button></div></div>
@@ -119,8 +132,15 @@ sun.shadow.camera.bottom = -35;
 scene.add(sun);
 
 let seed = 1847;
-let world = new World(seed);
+let renderDistance = matchMedia('(pointer: coarse)').matches ? 1 : 2;
+let world = new World(seed, renderDistance);
 scene.add(world.group);
+function updateTerrainFog() {
+  if (!(scene.fog instanceof THREE.Fog)) return;
+  scene.fog.far = renderDistance * 24 + 12;
+  scene.fog.near = Math.max(12, scene.fog.far - 22);
+}
+updateTerrainFog();
 
 let outfit: Outfit = 'ember';
 let appearance: CharacterAppearance = { ...defaultAppearance(outfit), clothing: 'tunic' };
@@ -142,6 +162,9 @@ const resources: Resources = { wood: 0, stone: 0, food: 3, water: 3 };
 const tools: Tool[] = [];
 const buildings: THREE.Group[] = [];
 const buildingRecords: BuildingRecord[] = [];
+const structures: StructuralPiece[] = [];
+const constructionRenderer = new ConstructionRenderer();
+scene.add(constructionRenderer.group);
 const powerLines = new THREE.Group();
 scene.add(powerLines);
 const enemies: THREE.Group[] = [];
@@ -158,9 +181,12 @@ let spawnCooldown = 0;
 let animationActionTime = 0;
 let animationAction: 'chop' | 'mine' | 'build' | 'attack' | 'hurt' = 'chop';
 let buildMode = false;
-let buildKind: BuildingKind = 'shelter';
+let buildKind: BuildKind = 'shelter';
 let buildGhost: THREE.Group | null = null;
 let buildRotation = 0;
+let buildLevel = 0;
+let autoRoof = true;
+const buildAim = new THREE.Vector2();
 const buildTarget = new THREE.Vector3();
 const placementRay = new THREE.Raycaster();
 const placementPointer = new THREE.Vector2();
@@ -260,7 +286,9 @@ addEventListener('keydown', event => {
   if (event.code === 'KeyB') toggleBuild();
   if (event.code === 'KeyE') interact();
   if (event.code === 'Space') buildMode ? placeBuilding() : gather();
-  if (event.code === 'KeyR' && buildMode) buildRotation += Math.PI / 2;
+  if (event.code === 'KeyR' && buildMode) rotateBuild();
+  if (event.code === 'BracketLeft' && buildMode && isPieceKind(buildKind)) changeFloor(-1);
+  if (event.code === 'BracketRight' && buildMode && isPieceKind(buildKind)) changeFloor(1);
   if (event.code === 'KeyM') showMap();
 });
 addEventListener('keyup', event => keys.delete(event.code));
@@ -438,7 +466,20 @@ document.querySelector<HTMLCanvasElement>('#minimap')!.addEventListener('keydown
 });
 document.querySelector('[data-tool="build"]')!.addEventListener('click', toggleBuild);
 document.querySelector('[data-tool="axe"]')!.addEventListener('click', () => { if (buildMode) toggleBuild(); });
-document.querySelector('#rotateBuild')!.addEventListener('click', () => { if (!gameplayBlocked() && buildGhost) buildRotation += Math.PI / 2; });
+document.querySelector('#rotateBuild')!.addEventListener('click', rotateBuild);
+document.querySelector('#floorDown')!.addEventListener('click', () => changeFloor(-1));
+document.querySelector('#floorUp')!.addEventListener('click', () => changeFloor(1));
+document.querySelector('#removePiece')!.addEventListener('click', removeTargetPiece);
+document.querySelector<HTMLInputElement>('#autoRoof')!.addEventListener('change', event => {
+  autoRoof = (event.target as HTMLInputElement).checked;
+  if (autoRoof && buildGhost && isPieceKind(buildKind)) {
+    const result = reconcileRoofs(selectedPiece());
+    constructionRenderer.refresh(structures);
+    updateResources();
+    if (result) toast(result);
+  }
+  void saveGame(false);
+});
 document.querySelector('#confirmBuild')!.addEventListener('click', placeBuilding);
 document.querySelector('#cancelBuild')!.addEventListener('click', cancelBuild);
 document.querySelector('#changeBuild')!.addEventListener('click', showBuildCatalog);
@@ -447,6 +488,13 @@ document.querySelector('#cameraDistance')!.addEventListener('input', event => { 
 document.querySelector('#cameraSpeed')!.addEventListener('input', event => { cameraSettings.rotationSpeed = Number((event.target as HTMLInputElement).value); });
 document.querySelector('#cameraSmoothing')!.addEventListener('input', event => { cameraSettings.smoothing = Number((event.target as HTMLInputElement).value); });
 document.querySelector('#gameSpeed')!.addEventListener('input', event => { gameSpeed = Number((event.target as HTMLInputElement).value); });
+const renderDistanceInput = document.querySelector<HTMLInputElement>('#renderDistance')!;
+renderDistanceInput.value = String(renderDistance);
+renderDistanceInput.addEventListener('input', () => {
+  renderDistance = Number(renderDistanceInput.value);
+  world.setRenderDistance(renderDistance);
+  updateTerrainFog();
+});
 
 document.querySelectorAll<HTMLButtonElement>('#outfits button').forEach(button => button.addEventListener('click', () => {
   outfit = button.dataset.outfit as Outfit;
@@ -465,6 +513,14 @@ document.querySelector('#newGame')!.addEventListener('click', () => {
   startGame();
 });
 document.querySelector('#continueGame')!.addEventListener('click', () => { enterImmersiveMode(); void loadGame(); });
+document.querySelector('#exportSave')!.addEventListener('click', () => { void exportSave(); });
+document.querySelector('#importSave')!.addEventListener('click', () => document.querySelector<HTMLInputElement>('#importSaveFile')!.click());
+document.querySelector<HTMLInputElement>('#importSaveFile')!.addEventListener('change', event => {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (file) void importSave(file);
+});
 document.querySelector('#exitFullscreen')!.addEventListener('click', () => {
   if (document.fullscreenElement) void document.exitFullscreen().catch(error => console.warn('Could not exit fullscreen', error));
 });
@@ -509,7 +565,13 @@ function refreshNpcPanel() {
   (document.querySelector('#npcRecruit') as HTMLButtonElement).disabled = npcState.recruited;
 }
 
-const catalog: Array<{ kind: BuildingKind; name: string; cost: Partial<Resources>; icon: string }> = [
+const catalog: Array<{ kind: BuildKind; name: string; cost: Partial<Resources>; icon: string }> = [
+  { kind: 'floor', name: 'Wood floor', cost: pieceCosts.floor, icon: '▦' },
+  { kind: 'wall', name: 'Wood wall', cost: pieceCosts.wall, icon: '▤' },
+  { kind: 'doorframe', name: 'Door frame', cost: pieceCosts.doorframe, icon: '⊓' },
+  { kind: 'door', name: 'Wood door', cost: pieceCosts.door, icon: '▯' },
+  { kind: 'roof', name: 'Wood roof', cost: pieceCosts.roof, icon: '▱' },
+  { kind: 'stairs', name: 'Wood stairs', cost: pieceCosts.stairs, icon: '◢' },
   { kind: 'shelter', name: 'Shelter', cost: buildingCosts.shelter, icon: '⌂' },
   { kind: 'storage', name: 'Storage', cost: buildingCosts.storage, icon: '▣' },
   { kind: 'lamp', name: 'Lamp', cost: buildingCosts.lamp, icon: '◉' },
@@ -530,7 +592,7 @@ catalog.forEach(item => {
 function resetWorld() {
   scene.remove(world.group);
   world.dispose();
-  world = new World(seed);
+  world = new World(seed, renderDistance);
   scene.add(world.group);
   scene.remove(player);
   scene.remove(npc);
@@ -541,6 +603,10 @@ function resetWorld() {
   for (const building of buildings) scene.remove(building);
   buildings.length = 0;
   buildingRecords.length = 0;
+  structures.length = 0;
+  autoRoof = true;
+  (document.querySelector('#autoRoof') as HTMLInputElement).checked = true;
+  constructionRenderer.refresh(structures);
   updatePowerLines();
   enemies.forEach(enemy => { scene.remove(enemy); disposeCharacter(enemy); });
   enemies.length = 0;
@@ -645,11 +711,94 @@ function cancelBuild() {
   removeGhost();
 }
 
-function selectBuild(kind: BuildingKind) {
+function rotateBuild() {
+  if (gameplayBlocked() || !buildGhost) return;
+  buildRotation += Math.PI / 2;
+  if (isPieceKind(buildKind)) updateBuildTarget(buildAim.x, buildAim.y);
+}
+
+function changeFloor(delta: number) {
+  if (gameplayBlocked() || !buildGhost || !isPieceKind(buildKind)) return;
+  buildLevel = THREE.MathUtils.clamp(buildLevel + delta, 0, 3);
+  document.querySelector('#floorLevel')!.textContent = `LEVEL ${buildLevel}`;
+  updateBuildTarget(buildAim.x, buildAim.y);
+}
+
+function updateBuildTarget(x: number, z: number) {
+  buildAim.set(x, z);
+  if (!isPieceKind(buildKind)) {
+    x = Math.round(x);
+    z = Math.round(z);
+    buildTarget.set(x, world.heightAt(x, z), z);
+    return;
+  }
+  const rotation = (Math.round(buildRotation / (Math.PI / 2)) % 2) as PieceRotation;
+  const snapped = snapPiece(buildKind, x, z, rotation);
+  const anchor = structures
+    .filter(piece => Math.hypot(piece.x - snapped.x, piece.z - snapped.z) <= 3.1)
+    .sort((a, b) => Math.hypot(a.x - snapped.x, a.z - snapped.z) - Math.hypot(b.x - snapped.x, b.z - snapped.z))[0];
+  const base = anchor ? anchor.y - anchor.level * FLOOR_HEIGHT : Math.round(world.heightAt(snapped.x, snapped.z) * 4) / 4;
+  buildTarget.set(snapped.x, base + buildLevel * FLOOR_HEIGHT, snapped.z);
+}
+
+function selectedPiece(): StructuralPiece {
+  if (!isPieceKind(buildKind)) throw new Error('No structural piece selected');
+  return {
+    id: 'preview', kind: buildKind, x: buildTarget.x, z: buildTarget.z, y: buildTarget.y,
+    level: buildLevel, rotation: (isEdgePiece(buildKind) ? Math.round(buildRotation / (Math.PI / 2)) % 2
+      : buildKind === 'stairs' ? Math.round(buildRotation / (Math.PI / 2)) % 4 : 0) as PieceRotation,
+    open: false,
+  };
+}
+
+function newPieceId() {
+  return Array.from(crypto.getRandomValues(new Uint32Array(4)), value => value.toString(16).padStart(8, '0')).join('');
+}
+
+function removeTargetPiece() {
+  if (!buildGhost || gameplayBlocked() || !isPieceKind(buildKind)) return;
+  const target = selectedPiece();
+  const piece = structures.find(other => other.x === target.x && other.z === target.z
+    && Math.abs(other.y - target.y) < 0.05 && other.kind === target.kind && other.rotation === target.rotation);
+  if (!piece) { toast('Select the same piece and aim at it to remove'); return; }
+  if (!removePiece(piece.id, structures, resources)) { toast('Remove the door before its frame'); return; }
+  const roofMessage = piece.kind === 'wall' || piece.kind === 'doorframe' ? reconcileRoofs(piece) : null;
+  constructionRenderer.refresh(structures);
+  updateResources();
+  updatePlacement();
+  toast(roofMessage ?? 'Piece removed; half its materials returned');
+  void saveGame(false);
+}
+
+function reconcileRoofs(changed: StructuralPiece) {
+  const cells = enclosedCells(structures, changed.y);
+  if (!cells) return 'Room too large for automatic roofing';
+  const enclosed = new Set(cells.map(cell => `${cell.x},${cell.z}`));
+  for (const roof of [...structures]) {
+    if (roof.kind === 'roof' && roof.automatic && Math.abs(roof.y - changed.y) < 0.05 && !enclosed.has(`${roof.x},${roof.z}`)) {
+      removePiece(roof.id, structures, resources);
+    }
+  }
+  if (!autoRoof) return null;
+  const missing = cells.filter(cell => !structures.some(piece =>
+    piece.x === cell.x && piece.z === cell.z
+    && ((piece.kind === 'roof' && Math.abs(piece.y - changed.y) < 0.05)
+      || (piece.kind === 'floor' && Math.abs(piece.y - changed.y - FLOOR_HEIGHT) < 0.05))));
+  if (!missing.length) return null;
+  const cost = { wood: missing.length * (pieceCosts.roof.wood ?? 0) };
+  if (structures.length + missing.length > 10000) return 'Structural piece limit prevents roofing';
+  if (!spend(resources, cost)) return `Room enclosed; need ${cost.wood} wood for its roof`;
+  for (const cell of missing) {
+    structures.push({ id: newPieceId(), kind: 'roof', ...cell, y: changed.y, level: changed.level, rotation: 0, open: false, automatic: true });
+  }
+  return `Room roofed · ${cost.wood} wood`;
+}
+
+function selectBuild(kind: BuildKind) {
   if (!buildMode) return;
   buildKind = kind;
   removeGhost();
-  buildGhost = createBuilding(kind);
+  buildGhost = isPieceKind(kind) ? createPieceGhost(kind) : createBuilding(kind);
   ghostMaterial = new THREE.MeshBasicMaterial({ color: '#85d6ad', transparent: true, opacity: 0.48, depthWrite: false, toneMapped: false });
   const originalMaterials = new Set<THREE.Material>();
   buildGhost.traverse(object => {
@@ -661,7 +810,7 @@ function selectBuild(kind: BuildingKind) {
     if (object instanceof THREE.Light) object.visible = false;
   });
   originalMaterials.forEach(material => material.dispose());
-  const radius = buildingRadius(kind);
+  const radius = isPieceKind(kind) ? 0.95 : buildingRadius(kind);
   placementFootprint = new THREE.Mesh(
     new THREE.RingGeometry(radius * 0.88, radius, 48),
     new THREE.MeshBasicMaterial({ color: '#a6ffce', side: THREE.DoubleSide, depthTest: false, transparent: true, opacity: 0.95 }),
@@ -672,13 +821,15 @@ function selectBuild(kind: BuildingKind) {
   buildGhost.add(placementFootprint);
   const x = Math.round(player.position.x + Math.sin(player.rotation.y) * 3.5);
   const z = Math.round(player.position.z + Math.cos(player.rotation.y) * 3.5);
-  buildTarget.set(x, world.heightAt(x, z), z);
+  updateBuildTarget(x, z);
   buildGhost.position.copy(buildTarget);
   targetOnTerrain = true;
   scene.add(buildGhost);
   if (document.activeElement instanceof HTMLElement && document.querySelector('#buildPanel')!.contains(document.activeElement)) document.activeElement.blur();
   document.querySelector('#buildPanel')!.classList.add('hidden');
   document.querySelector('#placementToolbar')!.classList.remove('hidden');
+  document.querySelector('#floorControls')!.classList.toggle('hidden', !isPieceKind(kind));
+  document.querySelector('#floorLevel')!.textContent = `LEVEL ${buildLevel}`;
   const item = catalog.find(entry => entry.kind === kind)!;
   document.querySelector('#placementName')!.textContent = `${item.name} · ${Object.entries(item.cost).map(([resource, amount]) => `${amount} ${resource}`).join(' / ')}`;
   updatePlacement();
@@ -711,9 +862,7 @@ function aimBuilding(clientX: number, clientY: number) {
   const point = world.intersectTerrain(placementRay);
   targetOnTerrain = Boolean(point);
   if (point) {
-    const x = Math.round(point.x);
-    const z = Math.round(point.z);
-    buildTarget.set(x, world.heightAt(x, z), z);
+    updateBuildTarget(point.x, point.z);
   }
   updatePlacement();
   return targetOnTerrain;
@@ -730,9 +879,22 @@ function pointerOverHud(x: number, y: number) {
 
 function placementIssue() {
   if (!targetOnTerrain) return 'Point at the terrain';
+  if (isPieceKind(buildKind)) {
+    const piece = selectedPiece();
+    if (structures.length >= 10000) return 'Structural piece limit reached';
+    const ground = world.heightAt(piece.x, piece.z);
+    if (ground <= 0.15) return 'Choose dry ground';
+    if (buildingRecords.some(other => Math.hypot(piece.x - other.x, piece.z - other.z) < buildingRadius(other.kind) + 1)) return 'Too close to another building';
+    if (pieceBlocks(piece, player.position.x, player.position.y, player.position.z)
+      || pieceBlocks(piece, npc.position.x, npc.position.y, npc.position.z)) return 'Move away from the character';
+    if (Math.hypot(piece.x - vehicle.position.x, piece.z - vehicle.position.z) < 1.5 && Math.abs(piece.y - vehicle.position.y) < 2) return 'Move away from the rover';
+    if (world.findNearest(piece.x, piece.z, 1)) return 'Clear nearby resources';
+    return pieceProblem(piece, structures, resources);
+  }
   const problem = placementProblem(buildTarget, buildKind, buildTarget.y, buildingRecords, player.position);
   if (problem) return problem;
   const footprint = buildingRadius(buildKind);
+  if (structures.some(piece => Math.hypot(piece.x - buildTarget.x, piece.z - buildTarget.z) < footprint + 1)) return 'Too close to another building';
   if (Math.hypot(buildTarget.x - npc.position.x, buildTarget.z - npc.position.z) < footprint + 0.6) return 'Move away from Mira';
   if (Math.hypot(buildTarget.x - vehicle.position.x, buildTarget.z - vehicle.position.z) < footprint + 1.2) return 'Move away from the rover';
   if (world.findNearest(buildTarget.x, buildTarget.z, footprint + 0.45)) return 'Clear nearby resources';
@@ -754,7 +916,7 @@ function updatePlacement() {
   if (status.textContent !== message) status.textContent = message;
   status.classList.toggle('invalid', Boolean(problem));
   const coordinates = document.querySelector('#placementCoordinates')!;
-  const grid = `Grid ${buildTarget.x}, ${buildTarget.z}`;
+  const grid = `Grid ${buildTarget.x}, ${buildTarget.z}${isPieceKind(buildKind) ? ` · Level ${buildLevel} · Elev ${buildTarget.y.toFixed(2)}` : ''}`;
   if (coordinates.textContent !== grid) coordinates.textContent = grid;
 }
 
@@ -773,6 +935,20 @@ function placeBuilding() {
   const item = catalog.find(entry => entry.kind === buildKind)!;
   const problem = placementIssue();
   if (problem) { toast(problem); return; }
+  if (isPieceKind(buildKind)) {
+    const piece = { ...selectedPiece(), id: newPieceId() };
+    if (!addPiece(piece, structures, resources)) { toast('Cannot place this piece'); return; }
+    const roofMessage = piece.kind === 'wall' || piece.kind === 'doorframe' ? reconcileRoofs(piece) : null;
+    constructionRenderer.refresh(structures);
+    animationAction = 'build';
+    animationActionTime = 0.6;
+    effects.burst(buildTarget, 'build');
+    updateResources();
+    updatePlacement();
+    toast(roofMessage ?? `${item.name} constructed`);
+    void saveGame(false);
+    return;
+  }
   if (!spend(resources, item.cost)) { toast('Not enough resources'); return; }
   const building = createBuilding(buildKind);
   animationAction = 'build';
@@ -870,6 +1046,20 @@ function interact() {
     toast('Exited vehicle');
     return;
   }
+  const door = structures.filter(piece => piece.kind === 'door' && Math.abs(piece.y - player.position.y) < 2)
+    .map(piece => ({ piece, distance: Math.hypot(piece.x - player.position.x, piece.z - player.position.z) }))
+    .filter(candidate => candidate.distance < 2.5)
+    .sort((a, b) => a.distance - b.distance)[0];
+  if (door && door.distance <= Math.min(vehicle.position.distanceTo(player.position), npc.position.distanceTo(player.position))) {
+    if (door.piece.open && pieceBlocks({ ...door.piece, open: false }, player.position.x, player.position.y, player.position.z)) {
+      toast('Step out of the doorway first');
+      return;
+    }
+    door.piece.open = !door.piece.open;
+    toast(door.piece.open ? 'Door opened' : 'Door closed');
+    void saveGame(false);
+    return;
+  }
   if (vehicle.position.distanceTo(player.position) < 3.2) {
     scene.remove(player);
     driving = true;
@@ -908,20 +1098,30 @@ function toast(message: string) {
 }
 
 function showMap() {
-  if (gameStarted && !gameplayBlocked()) toast(`Local map: ${Math.round(player.position.x)}, ${Math.round(player.position.z)} (bounded island)`);
+  if (gameStarted && !gameplayBlocked()) {
+    const position = planetCoordinates(player.position.x, player.position.z);
+    toast(`Local map: ${Math.round(position.x)}, ${Math.round(position.z)}`);
+  }
 }
 
 let last = performance.now();
+let accumulator = 0;
+const simulationStep = 1 / 30;
 function animate(now: number) {
   requestAnimationFrame(animate);
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
   if (preview && !document.querySelector('#characterPanel')!.classList.contains('hidden')) preview.render(now);
   if (!gameStarted || gameplayBlocked()) {
+    accumulator = 0;
     renderer.render(scene, camera);
     return;
   }
-  updateGame(dt);
+  accumulator += dt;
+  while (accumulator >= simulationStep) {
+    updateGame(simulationStep);
+    accumulator -= simulationStep;
+  }
   renderer.render(scene, camera);
 }
 requestAnimationFrame(animate);
@@ -968,6 +1168,72 @@ function updateEnemyProjectiles(dt: number) {
   }
 }
 
+function projectWorldEntities() {
+  const project = (object: THREE.Object3D) => {
+    const point = nearestPlanetPosition(object.position.x, object.position.z, player.position.x, player.position.z);
+    const changed = point.x !== object.position.x || point.z !== object.position.z;
+    if (changed) {
+      if (planetCoordinates(object.position.x, object.position.z).reflected !== planetCoordinates(point.x, point.z).reflected) {
+        object.rotation.y = Math.PI - object.rotation.y;
+      }
+      object.position.set(point.x, world.heightAt(point.x, point.z), point.z);
+    }
+    return changed;
+  };
+  project(npc);
+  if (!driving) project(vehicle);
+  let powerLinesChanged = false;
+  buildings.forEach((building, index) => {
+    if (!project(building)) return;
+    buildingRecords[index].x = building.position.x;
+    buildingRecords[index].z = building.position.z;
+    buildingRecords[index].y = building.position.y;
+    buildingRecords[index].rotation = building.rotation.y;
+    powerLinesChanged = true;
+  });
+  if (powerLinesChanged) updatePowerLines();
+  let structuresChanged = false;
+  for (const piece of structures) {
+    const point = nearestPlanetPosition(piece.x, piece.z, player.position.x, player.position.z);
+    if (piece.x !== point.x || piece.z !== point.z) {
+      if (piece.kind === 'stairs' && planetCoordinates(piece.x, piece.z).reflected !== planetCoordinates(point.x, point.z).reflected) {
+        if (piece.rotation === 0) piece.rotation = 2;
+        else if (piece.rotation === 2) piece.rotation = 0;
+      }
+      piece.x = point.x;
+      piece.z = point.z;
+      structuresChanged = true;
+    }
+  }
+  if (structuresChanged) constructionRenderer.refresh(structures);
+}
+
+function rebaseWorld() {
+  const dx = Math.abs(player.position.x) > PLANET_WIDTH * 2
+    ? -Math.trunc(player.position.x / PLANET_WIDTH) * PLANET_WIDTH : 0;
+  const dz = Math.abs(player.position.z) > PLANET_HEIGHT * 2
+    ? -Math.trunc(player.position.z / (PLANET_HEIGHT * 2)) * PLANET_HEIGHT * 2 : 0;
+  if (!dx && !dz) return;
+  const shift = (object: THREE.Object3D) => { object.position.x += dx; object.position.z += dz; };
+  [player, npc, vehicle, ...buildings, ...enemies].forEach(shift);
+  enemyProjectiles.forEach(projectile => shift(projectile.mesh));
+  if (buildGhost) shift(buildGhost);
+  buildTarget.x += dx;
+  buildTarget.z += dz;
+  buildAim.x += dx;
+  buildAim.y += dz;
+  buildingRecords.forEach(record => { record.x += dx; record.z += dz; });
+  structures.forEach(piece => { piece.x += dx; piece.z += dz; });
+  constructionRenderer.refresh(structures);
+  camera.position.x += dx;
+  camera.position.z += dz;
+  cameraFocus.x += dx;
+  cameraFocus.z += dz;
+  effects.shift(dx, dz);
+  world.rebase(dx, dz);
+  updatePowerLines();
+}
+
 function updateGame(dt: number) {
   effects.update(dt);
   attackCooldown = Math.max(0, attackCooldown - dt);
@@ -1008,9 +1274,10 @@ function updateGame(dt: number) {
     if (Math.abs(vehicleSpeed) > 0.1) vehicle.rotation.y -= inputX * Math.sign(vehicleSpeed) * 1.5 * dt;
     const dx = Math.cos(vehicle.rotation.y);
     const dz = -Math.sin(vehicle.rotation.y);
-    const nextX = THREE.MathUtils.clamp(vehicle.position.x + dx * vehicleSpeed * dt, -47, 47);
-    const nextZ = THREE.MathUtils.clamp(vehicle.position.z + dz * vehicleSpeed * dt, -47, 47);
-    const blocked = buildingRecords.some(b => Math.hypot(nextX - b.x, nextZ - b.z) < (b.kind === 'shelter' ? 2.4 : 1.8));
+    const nextX = vehicle.position.x + dx * vehicleSpeed * dt;
+    const nextZ = vehicle.position.z + dz * vehicleSpeed * dt;
+    const blocked = buildingRecords.some(b => Math.hypot(nextX - b.x, nextZ - b.z) < (b.kind === 'shelter' ? 2.4 : 1.8))
+      || structures.some(piece => pieceBlocks(piece, nextX, vehicle.position.y, nextZ, 1));
     if (!blocked && world.heightAt(nextX, nextZ) > -0.5) {
       vehicle.position.x = nextX;
       vehicle.position.z = nextZ;
@@ -1035,15 +1302,16 @@ function updateGame(dt: number) {
     const dx = direction.x;
     const dz = direction.y;
     const target = player;
-    const nextX = THREE.MathUtils.clamp(target.position.x + dx * speed * dt, -47, 47);
-    const nextZ = THREE.MathUtils.clamp(target.position.z + dz * speed * dt, -47, 47);
-    const collides = buildingRecords.some(b => Math.hypot(nextX - b.x, nextZ - b.z) < (b.kind === 'shelter' ? 2 : b.kind === 'storage' ? 1.6 : 1));
+    const nextX = target.position.x + dx * speed * dt;
+    const nextZ = target.position.z + dz * speed * dt;
+    const collides = buildingRecords.some(b => Math.hypot(nextX - b.x, nextZ - b.z) < (b.kind === 'shelter' ? 2 : b.kind === 'storage' ? 1.6 : 1))
+      || structures.some(piece => pieceBlocks(piece, nextX, target.position.y, nextZ));
     if (!collides && world.heightAt(nextX, nextZ) > -0.5) {
       target.position.x = nextX;
       target.position.z = nextZ;
       actualMovement = length;
     }
-    target.position.y = world.heightAt(target.position.x, target.position.z);
+    target.position.y = floorSurface(structures, target.position.x, target.position.z, target.position.y, world.heightAt(target.position.x, target.position.z));
     const heading = Math.atan2(dx, dz);
     target.rotation.y = dampAngle(target.rotation.y, heading, 10, dt);
     if (!buildMode && cameraSettings.autoFollow && performance.now() > manualCameraUntil) {
@@ -1054,6 +1322,10 @@ function updateGame(dt: number) {
   if (driving) {
     player.position.copy(vehicle.position).add(new THREE.Vector3(0, 1, 0));
   }
+  rebaseWorld();
+  world.updateChunks(player.position.x, player.position.z);
+  projectWorldEntities();
+  constructionRenderer.update(dt, player.position);
 
   const elapsed = performance.now();
   updateNpc(dt);
@@ -1082,8 +1354,8 @@ function updateGame(dt: number) {
 
   if (isNight(gameMinutes) && enemies.length < 2 && spawnCooldown === 0) {
     const angle = seededNoise(day, elapsed * 0.001, seed) * Math.PI * 2;
-    const x = THREE.MathUtils.clamp(player.position.x + Math.cos(angle) * 12, -46, 46);
-    const z = THREE.MathUtils.clamp(player.position.z + Math.sin(angle) * 12, -46, 46);
+    const x = player.position.x + Math.cos(angle) * 12;
+    const z = player.position.z + Math.sin(angle) * 12;
     if (world.heightAt(x, z) > 0.2 && buildingRecords.every(b => Math.hypot(x - b.x, z - b.z) > 4)) {
       const kind = chooseEnemyKind(day, seededNoise(x, z, seed + day));
       const enemy = createEnemy(kind);
@@ -1134,17 +1406,15 @@ function updateGame(dt: number) {
     const blend = 1 - Math.exp(-14 * dt);
     buildGhost.position.x = THREE.MathUtils.lerp(buildGhost.position.x, buildTarget.x, blend);
     buildGhost.position.z = THREE.MathUtils.lerp(buildGhost.position.z, buildTarget.z, blend);
-    buildGhost.position.y = world.heightAt(buildGhost.position.x, buildGhost.position.z);
+    buildGhost.position.y = isPieceKind(buildKind)
+      ? THREE.MathUtils.lerp(buildGhost.position.y, buildTarget.y, blend)
+      : world.heightAt(buildGhost.position.x, buildGhost.position.z);
     buildGhost.rotation.y = buildRotation;
     updatePlacement();
   }
 
   const focus = driving ? vehicle.position : player.position;
   const look = new THREE.Vector3(focus.x, focus.y + (driving ? 1.9 : 1.8), focus.z);
-  if (buildGhost?.visible) {
-    const offset = buildTarget.clone().sub(player.position).setY(0).multiplyScalar(0.25).clampLength(0, 3);
-    look.add(offset);
-  }
   if (!cameraReady) { cameraFocus.copy(look); cameraReady = true; }
   cameraFocus.lerp(look, 1 - Math.exp(-cameraSettings.smoothing * dt));
   const distance = Math.min(24, cameraSettings.distance + (driving ? 2 : 0));
@@ -1159,9 +1429,11 @@ function updateGame(dt: number) {
   rayDirection.normalize();
   cameraRay.set(cameraFocus, rayDirection);
   cameraRay.far = rayLength;
-  const hit = cameraRay.intersectObjects(buildings, true)[0];
-  if (hit && hit.distance > 0.3) cameraDesired.copy(cameraFocus).addScaledVector(rayDirection, Math.max(0.5, hit.distance - 0.35));
+  const buildingHit = cameraRay.intersectObjects(buildings, true)[0];
+  if (buildingHit && buildingHit.distance > 0.3) cameraDesired.copy(cameraFocus).addScaledVector(rayDirection, Math.max(0.5, buildingHit.distance - 0.35));
   const unobstructedDistance = cameraDesired.distanceTo(cameraFocus);
+  cameraRay.far = unobstructedDistance;
+  world.updateTreeOcclusion(cameraRay);
   for (let distanceAlongRay = 0.75; distanceAlongRay < unobstructedDistance; distanceAlongRay += 0.5) {
     const sample = cameraFocus.clone().addScaledVector(rayDirection, distanceAlongRay);
     if (sample.y < world.heightAt(sample.x, sample.z) + 0.35) {
@@ -1226,8 +1498,9 @@ function updatePowerLines() {
       const a = buildingRecords[i];
       const b = buildingRecords[j];
       if (!areConnected(a, b)) continue;
+      const neighbor = nearestPlanetPosition(b.x, b.z, a.x, a.z);
       const geometry = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(a.x, a.y + 0.95, a.z), new THREE.Vector3(b.x, b.y + 0.95, b.z),
+        new THREE.Vector3(a.x, a.y + 0.95, a.z), new THREE.Vector3(neighbor.x, b.y + 0.95, neighbor.z),
       ]);
       powerLines.add(new THREE.Line(geometry, new THREE.LineBasicMaterial({ color: '#e9c271' })));
     }
@@ -1280,7 +1553,7 @@ function updateNpc(dt: number) {
       const dz = npc.position.z - blocker.z;
       const tangent = new THREE.Vector3(-dz, 0, dx).normalize();
       npc.position.addScaledVector(tangent, dt * 1.6);
-    } else {
+    } else if (!structures.some(piece => pieceBlocks(piece, next.x, npc.position.y, next.z))) {
       npc.position.x = next.x;
       npc.position.z = next.z;
     }
@@ -1386,13 +1659,72 @@ function openDatabase() {
   });
 }
 
+async function readSaveRecord(key: string) {
+  const db = await openDatabase();
+  try {
+    const request = db.transaction('saves', 'readonly').objectStore('saves').get(key);
+    return await new Promise<unknown>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function exportSave() {
+  try {
+    const saved = await readSaveRecord('primary');
+    if (!saved) { toast('No saved world found'); return; }
+    if (!isSaveData(saved)) { toast('Save is invalid or from an unsupported version'); return; }
+    const url = URL.createObjectURL(new Blob([JSON.stringify(saved, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'new-dawn-save.json';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('Save exported');
+  } catch (error) {
+    console.error('Could not export world', error);
+    toast('Could not export world. Check browser storage.');
+  }
+}
+
+async function importSave(file: File) {
+  try {
+    if (file.size > 5 * 1024 * 1024) { toast('Save file is too large'); return; }
+    const saved: unknown = JSON.parse(await file.text());
+    if (!isSaveData(saved)) { toast('Save is invalid or from an unsupported version'); return; }
+    const existing = await readSaveRecord('primary');
+    if (existing && !window.confirm('Replace the current saved world? A backup will be kept in this browser.')) return;
+    const db = await openDatabase();
+    try {
+      const tx = db.transaction('saves', 'readwrite');
+      const store = tx.objectStore('saves');
+      if (existing) store.put(existing, 'pre-import-backup');
+      store.put(saved, 'primary');
+      await new Promise<void>((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error ?? new Error('Import transaction aborted'));
+      });
+    } finally {
+      db.close();
+    }
+    toast('Save imported. Select Continue.');
+  } catch (error) {
+    console.error('Could not import world', error);
+    toast('Could not import world. Check the file and browser storage.');
+  }
+}
+
 async function saveGame(notify: boolean) {
   if (!gameStarted) return false;
   try {
     const db = await openDatabase();
     const tx = db.transaction('saves', 'readwrite');
     tx.objectStore('saves').put({
-      version: 5,
+      version: 7,
       seed,
       outfit,
       appearance: { ...appearance },
@@ -1403,6 +1735,8 @@ async function saveGame(notify: boolean) {
       npc: { x: npc.position.x, z: npc.position.z },
       resources,
       buildings: buildingRecords,
+      structures,
+      autoRoof,
       terrain: world.snapshot(),
       depleted: world.depletedSnapshot(),
       npcState: { ...npcState },
@@ -1428,16 +1762,35 @@ async function saveGame(notify: boolean) {
 
 async function loadGame() {
   try {
-    const db = await openDatabase();
-    const tx = db.transaction('saves', 'readonly');
-    const request = tx.objectStore('saves').get('primary');
-    const saved: unknown = await new Promise((resolve, reject) => {
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-    db.close();
+    const saved = await readSaveRecord('primary');
     if (!saved) { toast('No saved world found'); return false; }
     if (!isSaveData(saved)) { toast('Save is invalid or from an unsupported version'); return false; }
+      if (saved.version < 6) {
+        const backupDb = await openDatabase();
+        const backupTx = backupDb.transaction('saves', 'readwrite');
+        const store = backupTx.objectStore('saves');
+        const existing = store.get('pre-planet-backup');
+        existing.onsuccess = () => { if (!existing.result) store.put(saved, 'pre-planet-backup'); };
+        await new Promise<void>((resolve, reject) => {
+          backupTx.oncomplete = () => resolve();
+          backupTx.onerror = () => reject(backupTx.error);
+          backupTx.onabort = () => reject(backupTx.error ?? new Error('Legacy backup transaction aborted'));
+        });
+        backupDb.close();
+      }
+      if (saved.version < 7) {
+        const backupDb = await openDatabase();
+        const backupTx = backupDb.transaction('saves', 'readwrite');
+        const store = backupTx.objectStore('saves');
+        const existing = store.get('pre-construction-backup');
+        existing.onsuccess = () => { if (!existing.result) store.put(saved, 'pre-construction-backup'); };
+        await new Promise<void>((resolve, reject) => {
+          backupTx.oncomplete = () => resolve();
+          backupTx.onerror = () => reject(backupTx.error);
+          backupTx.onabort = () => reject(backupTx.error ?? new Error('Construction backup transaction aborted'));
+        });
+        backupDb.close();
+      }
       const save = saved;
       seed = save.seed;
       outfit = save.outfit;
@@ -1450,11 +1803,12 @@ async function loadGame() {
       if (save.npcState) Object.assign(npcState, save.npcState);
       health = save.health ?? 100;
       tools.push(...(save.tools ?? []));
+      world.updateChunks(save.player.x, save.player.z, true);
+      world.restore(save.terrain);
+      world.restoreDepleted(save.depleted ?? []);
       player.position.set(save.player.x, world.heightAt(save.player.x, save.player.z), save.player.z);
       npc.position.set(save.npc.x, world.heightAt(save.npc.x, save.npc.z), save.npc.z);
       vehicle.position.set(save.vehicle.x, world.heightAt(save.vehicle.x, save.vehicle.z), save.vehicle.z);
-      world.restore(save.terrain);
-      world.restoreDepleted(save.depleted ?? []);
       gameMinutes = save.calendar.minute;
       day = save.calendar.day;
       gameSpeed = save.calendar.speed ?? 2.2;
@@ -1467,6 +1821,13 @@ async function loadGame() {
         buildings.push(building);
         buildingRecords.push({ ...record, charge: record.charge ?? 0, powered: false });
       });
+      structures.push(...(save.structures ?? []).map(piece => ({ ...piece })));
+      autoRoof = save.autoRoof ?? true;
+      (document.querySelector('#autoRoof') as HTMLInputElement).checked = autoRoof;
+      constructionRenderer.refresh(structures);
+      if (save.player.y !== undefined) {
+        player.position.y = floorSurface(structures, player.position.x, player.position.z, save.player.y, world.heightAt(player.position.x, player.position.z));
+      }
       updatePowerLines();
       updateResources();
       updateObjective();

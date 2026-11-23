@@ -37,4 +37,11 @@ describe('electrical network', () => {
     updatePower(nodes, 1, 1);
     expect(nodes[3].powered).toBe(false);
   });
+  it('keeps a power network connected across longitude copies', () => {
+    const turbine = node('turbine', 1535);
+    const generator = node('generator', -1535);
+    const lamp = node('lamp', -1532);
+    updatePower([turbine, generator, lamp], 1, 1);
+    expect(lamp.powered).toBe(true);
+  });
 });

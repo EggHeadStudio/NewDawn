@@ -19,7 +19,7 @@ describe('playable loop', () => {
     expect(canPlace({ x: 4, z: 0 }, 'shelter', 1, [], { x: 0, z: 0 })).toBe(true);
   });
   it('explains why a placement is rejected', () => {
-    expect(placementProblem({ x: 46, z: 0 }, 'lamp', 1, [], { x: 0, z: 0 })).toBe('Too close to the island edge');
+    expect(placementProblem({ x: 60, z: 0 }, 'lamp', 1, [], { x: 0, z: 0 })).toBeNull();
     expect(placementProblem({ x: 4, z: 0 }, 'lamp', 0, [], { x: 0, z: 0 })).toBe('Choose dry ground');
     expect(placementProblem({ x: 1, z: 0 }, 'shelter', 1, [], { x: 0, z: 0 })).toBe('Move away from the player');
     expect(placementProblem({ x: 4, z: 0 }, 'lamp', 1, [{ kind: 'lamp', x: 4, z: 0 }], { x: 0, z: 0 })).toBe('Too close to another building');

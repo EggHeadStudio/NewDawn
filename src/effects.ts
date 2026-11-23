@@ -42,6 +42,13 @@ export class Effects {
       }
     }
   }
+
+  shift(dx: number, dz: number) {
+    for (const particle of this.particles) {
+      particle.mesh.position.x += dx;
+      particle.mesh.position.z += dz;
+    }
+  }
 }
 
 export class Precipitation {

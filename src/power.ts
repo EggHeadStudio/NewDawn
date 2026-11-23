@@ -1,4 +1,5 @@
 import type { BuildingKind, Position } from './gameplay';
+import { nearestPlanetPosition } from './planet';
 
 export interface PowerNode extends Position {
   kind: BuildingKind;
@@ -9,7 +10,8 @@ export interface PowerNode extends Position {
 export const LINK_RANGE = 4;
 const electrical = new Set<BuildingKind>(['turbine', 'generator', 'battery', 'cable', 'lamp']);
 export function areConnected(a: PowerNode, b: PowerNode) {
-  return electrical.has(a.kind) && electrical.has(b.kind) && Math.hypot(a.x - b.x, a.z - b.z) <= LINK_RANGE;
+  const near = nearestPlanetPosition(b.x, b.z, a.x, a.z);
+  return electrical.has(a.kind) && electrical.has(b.kind) && Math.hypot(a.x - near.x, a.z - near.z) <= LINK_RANGE;
 }
 
 /** Wind generation needs a turbine directly linked to a generator. Batteries buffer surplus. */
