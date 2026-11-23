@@ -1,0 +1,12 @@
+{
+  "name": "EggHeadStudio: New Dawn",
+  "short_name": "New Dawn",
+  "description": "A low-poly survival and civilization sandbox.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#102d32",
+  "theme_color": "#102d32",
+  "icons": []
+}
