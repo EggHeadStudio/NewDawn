@@ -79,13 +79,19 @@ export class World {
     }
     colors.needsUpdate = true;
     for (const object of this.group.children) {
+      if (object instanceof THREE.InstancedMesh && object.userData.groundCover) {
+        const material = object.material as THREE.MeshStandardMaterial;
+        const flower = object.userData.groundCover === 'flower';
+        material.color.set(season === 'Winter' ? '#c1d5ca' : season === 'Autumn' ? '#b7a16b' : flower ? '#ecd9a4' : '#7aa85d');
+        object.visible = !(flower && season === 'Winter');
+      }
       if (object.userData.resource !== 'wood') continue;
-      object.children.forEach((child, index) => {
-        if (index === 0 || !(child instanceof THREE.Mesh) || !(child.material instanceof THREE.MeshStandardMaterial)) return;
+      object.children.forEach(child => {
+        if (!(child instanceof THREE.Mesh) || !(child.material instanceof THREE.MeshStandardMaterial) || typeof child.userData.foliageTier !== 'number') return;
         const colors = season === 'Autumn' ? ['#bb8a4e', '#a96b43', '#c39856']
           : season === 'Winter' ? ['#a6c1b6', '#789b91', '#cad8cd']
           : ['#4f8152', '#3f7350', '#668f55'];
-        child.material.color.set(colors[index - 1]);
+        child.material.color.set(colors[child.userData.foliageTier]);
       });
     }
   }
@@ -131,6 +137,38 @@ export class World {
     this.group.add(water);
 
     this.addNature();
+    this.addGroundCover();
+  }
+
+  private addGroundCover() {
+    const grass: THREE.Matrix4[] = [];
+    const flowers: THREE.Matrix4[] = [];
+    const transform = new THREE.Object3D();
+    for (let z = -44; z <= 44; z += 2) {
+      for (let x = -44; x <= 44; x += 2) {
+        const n = seededNoise(x, z, this.seed + 82);
+        const px = x + n - 0.5;
+        const pz = z + seededNoise(z, x, this.seed + 71) - 0.5;
+        const y = terrainHeight(px, pz, this.seed);
+        const biome = biomeAt(px, pz, this.seed);
+        if (y < 0.5 || biome === 'rock' || biome === 'ocean' || n < 0.45) continue;
+        transform.position.set(px, y + 0.13, pz);
+        transform.rotation.set(0, n * Math.PI * 2, (n - 0.5) * 0.25);
+        transform.scale.setScalar(0.7 + n * 0.7);
+        transform.updateMatrix();
+        (n > 0.94 ? flowers : grass).push(transform.matrix.clone());
+      }
+    }
+    const addCover = (matrices: THREE.Matrix4[], geometry: THREE.BufferGeometry, color: string, kind: 'grass' | 'flower') => {
+      const mesh = new THREE.InstancedMesh(geometry, new THREE.MeshStandardMaterial({ color, roughness: 1 }), matrices.length);
+      mesh.userData.groundCover = kind;
+      matrices.forEach((matrix, index) => mesh.setMatrixAt(index, matrix));
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.computeBoundingSphere();
+      this.group.add(mesh);
+    };
+    addCover(grass, new THREE.ConeGeometry(0.11, 0.35, 3), '#7aa85d', 'grass');
+    addCover(flowers, new THREE.IcosahedronGeometry(0.12, 0), '#ecd9a4', 'flower');
   }
 
   private addNature() {
@@ -213,6 +251,10 @@ export class World {
     disposeObject(this.group);
   }
 
+  intersectTerrain(ray: THREE.Raycaster) {
+    return ray.intersectObject(this.mesh)[0]?.point;
+  }
+
   private tree(x: number, y: number, z: number) {
     const root = new THREE.Group();
     root.position.set(x, y, z);
@@ -225,17 +267,30 @@ export class World {
     trunk.castShadow = true;
     root.add(trunk);
     const crownColors = ['#4f8152', '#3f7350', '#668f55'];
+    const broadleaf = seededNoise(x + 2, z - 5, this.seed) > 0.58;
     for (let i = 0; i < 3; i++) {
       const crown = new THREE.Mesh(
-        new THREE.ConeGeometry(0.95 - i * 0.12, 1.45, 7),
+        broadleaf ? new THREE.IcosahedronGeometry(0.8 - i * 0.12, 1) : new THREE.ConeGeometry(0.95 - i * 0.12, 1.45, 7),
         new THREE.MeshStandardMaterial({ color: crownColors[i], roughness: 0.9 })
       );
       crown.position.y = 1.55 + i * 0.55;
+      if (broadleaf) crown.position.x = (i - 1) * 0.38;
+      crown.userData.foliageTier = i;
       crown.castShadow = true;
       root.add(crown);
     }
     root.userData.resource = 'wood';
     return root;
+  }
+
+  animate(time: number, wind: number) {
+    const water = this.group.getObjectByName('water');
+    if (water) water.position.y = -0.08 + Math.sin(time * 0.0007) * 0.035;
+    for (const object of this.group.children) {
+      if (object.userData.resource === 'wood') {
+        object.rotation.z = Math.sin(time * 0.0012 + object.position.x * 0.2 + object.position.z * 0.1) * Math.min(0.025, wind * 0.015);
+      }
+    }
   }
 
   heightAt(x: number, z: number) {
@@ -267,6 +322,7 @@ export class World {
     }
     pos.needsUpdate = true;
     this.geometry.computeVertexNormals();
+    this.geometry.computeBoundingSphere();
   }
 
   snapshot() {

@@ -38,14 +38,21 @@ export interface Position { x: number; z: number }
 export interface BuildingPosition extends Position { kind: BuildingKind }
 
 export function buildingRadius(kind: BuildingKind) {
-  return kind === 'shelter' ? 1.8 : kind === 'storage' ? 1.45 : kind === 'lamp' || kind === 'cable' ? 0.4 : 0.9;
+  return kind === 'shelter' ? 2.55 : kind === 'storage' ? 1.75
+    : kind === 'lamp' || kind === 'cable' ? 0.4 : kind === 'battery' ? 0.7 : kind === 'generator' ? 1.1 : 0.9;
+}
+
+export function placementProblem(position: Position, kind: BuildingKind, height: number, buildings: BuildingPosition[], player: Position) {
+  const radius = buildingRadius(kind);
+  if (Math.abs(position.x) >= 46 || Math.abs(position.z) >= 46) return 'Too close to the island edge';
+  if (height <= 0.15) return 'Choose dry ground';
+  if (Math.hypot(position.x - player.x, position.z - player.z) <= radius + 0.5) return 'Move away from the player';
+  if (buildings.some(other => Math.hypot(position.x - other.x, position.z - other.z) < radius + buildingRadius(other.kind) + 0.25)) return 'Too close to another building';
+  return null;
 }
 
 export function canPlace(position: Position, kind: BuildingKind, height: number, buildings: BuildingPosition[], player: Position) {
-  const radius = buildingRadius(kind);
-  return height > 0.15 && Math.abs(position.x) < 46 && Math.abs(position.z) < 46
-    && Math.hypot(position.x - player.x, position.z - player.z) > radius + 0.5
-    && buildings.every(other => Math.hypot(position.x - other.x, position.z - other.z) >= radius + buildingRadius(other.kind) + 0.25);
+  return placementProblem(position, kind, height, buildings, player) === null;
 }
 
 export function isNight(minutes: number) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canPlace, craftTool, daylightAt, isNight, spend, type Inventory, type Tool } from './gameplay';
+import { canPlace, placementProblem, craftTool, daylightAt, isNight, spend, type Inventory, type Tool } from './gameplay';
 import { World } from './world';
 
 describe('playable loop', () => {
@@ -15,7 +15,15 @@ describe('playable loop', () => {
     expect(canPlace({ x: 4, z: 0 }, 'shelter', -1, [], { x: 0, z: 0 })).toBe(false);
     expect(canPlace({ x: 1, z: 0 }, 'shelter', 1, [], { x: 0, z: 0 })).toBe(false);
     expect(canPlace({ x: 4, z: 0 }, 'shelter', 1, [{ kind: 'storage', x: 5, z: 0 }], { x: 0, z: 0 })).toBe(false);
+    expect(canPlace({ x: 2.8, z: 2.8 }, 'shelter', 1, [{ kind: 'shelter', x: 0, z: 0 }], { x: 9, z: 9 })).toBe(false);
     expect(canPlace({ x: 4, z: 0 }, 'shelter', 1, [], { x: 0, z: 0 })).toBe(true);
+  });
+  it('explains why a placement is rejected', () => {
+    expect(placementProblem({ x: 46, z: 0 }, 'lamp', 1, [], { x: 0, z: 0 })).toBe('Too close to the island edge');
+    expect(placementProblem({ x: 4, z: 0 }, 'lamp', 0, [], { x: 0, z: 0 })).toBe('Choose dry ground');
+    expect(placementProblem({ x: 1, z: 0 }, 'shelter', 1, [], { x: 0, z: 0 })).toBe('Move away from the player');
+    expect(placementProblem({ x: 4, z: 0 }, 'lamp', 1, [{ kind: 'lamp', x: 4, z: 0 }], { x: 0, z: 0 })).toBe('Too close to another building');
+    expect(placementProblem({ x: 4, z: 0 }, 'lamp', 1, [], { x: 0, z: 0 })).toBeNull();
   });
   it('crafts a tool once and consumes its ingredients', () => {
     const inventory: Inventory = { wood: 6, stone: 4, food: 0, water: 0 };

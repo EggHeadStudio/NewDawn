@@ -13,15 +13,24 @@ Open the URL printed by Vite. Node.js 20.19+ or 22.12+ is required. On systems w
 
 ### Play
 
+- Choose a character name and use **Customize character** to change appearance and rotate the preview before starting. Clothing and armor options are starting cosmetics, not craftable or equippable items.
 - **Walk:** WASD or arrows; hold Shift to run. Movement is camera-relative.
 - **Camera:** right-drag to rotate and mouse wheel to zoom. The pause menu provides auto-follow, distance, rotation-speed and smoothing controls. Auto-follow resumes after manual rotation.
 - **Gather or fight:** Space near trees, rocks, berries, or enemies. Open **Pack** to craft an axe and pickaxe, which increase gathering yields.
 - **Interact:** E near Mira or the rover; elsewhere, E digs. Recruit Mira, build storage, then assign wood or stone gathering.
-- **Build:** B or the Build button, choose a structure, move until the ghost is green, then use Space or Place. R or Rotate turns the ghost. Press B or the close button to exit.
+- **Build:** B or Build opens the catalog. Choosing a structure closes it and shows a snapped ghost with its cost and placement status. On desktop, aim at terrain with the mouse, left-click or press Space to place, R to rotate, and Escape or a right-click to cancel; right-drag orbits the camera. On touch, drag on the world to aim above your finger, use A to place and B to cancel, and use the edge toolbar to rotate or change buildings. Two-finger gestures orbit and zoom. Green means the position and resources are valid; red explains why placement is blocked.
 - **Rover:** E enters/exits; W/S accelerate or brake/reverse, A/D steer.
 - **Power:** place a turbine within four units of a generator; connect generator, battery, cable posts, and lamps by placing neighboring devices within four units. Gold lines indicate connections. Wind varies, lamps consume power, and batteries store surplus.
-- **Touch:** left joystick moves; right-side drag rotates the camera, pinch zooms, and A/B are contextual. Use the Build and Pack buttons for menus. In the rover, hold A to accelerate, B to brake/reverse, and Exit to leave.
+- **Touch:** left joystick moves; right-side drag rotates the camera, pinch zooms, and A/B are contextual. Tap the minimap for local coordinates. Use the Build and Pack buttons for menus. In the rover, hold A to accelerate, B to brake/reverse, and Exit to leave.
 - Pause to save. Saves are stored in the browser's IndexedDB; Continue restores the last save. Autosave runs approximately once per minute.
+- Deer and rabbits flee and can be hunted for food; wolves may attack the player or prey. Birds fly and rest.
+- Different enemy types appear at night as days pass; necromancers attack at range. Their progression is based on days, not civilization eras, and active enemies are not saved.
+
+### Install and update
+
+The production build includes an offline shell. Supported browsers may offer **Install Game**; on iOS use Safari's Share menu and **Add to Home Screen**. Availability varies by browser. Fullscreen is attempted after a play action and can be exited from pause settings; unsupported browsers remain in their normal viewport.
+
+An available update prompts **Update Now** or **Later**. Updating saves an active game before switching versions and restores it after reload; a failed save cancels the update. Keep browser storage enabled. Installation and device behavior have not been verified on physical phones.
 
 ## Validation
 
@@ -30,6 +39,8 @@ npm.cmd test
 npm.cmd run build
 npm.cmd run preview
 ```
+
+Browser acceptance tests use Playwright. Install its Chromium browser once with `npx.cmd playwright install chromium`, then run `npm.cmd run test:e2e`. To use an installed Microsoft Edge instead, set `$env:PLAYWRIGHT_BROWSER_CHANNEL='msedge'` before running the test command. The tests use isolated browser contexts and a local Vite server.
 
 ## GitHub Pages
 

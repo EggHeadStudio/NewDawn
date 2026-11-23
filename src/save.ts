@@ -2,11 +2,17 @@ import { buildingCosts, type BuildingKind, type Inventory, type Tool } from './g
 import type { Outfit } from './assets';
 import type { NpcState } from './npc';
 import { safeSpawn } from './world';
+import { isAppearance, type CharacterAppearance } from './appearance';
+import { isWildlifeState, type AnimalState } from './wildlife';
 
 export interface SaveData {
-  version: 1 | 2;
+  version: 1 | 2 | 3 | 4 | 5;
   seed: number;
   outfit: Outfit;
+  appearance?: CharacterAppearance;
+  playerName?: string;
+  npcAppearanceSeed?: number;
+  wildlife?: AnimalState[];
   player: { x: number; z: number };
   npc: { x: number; z: number };
   resources: Inventory;
@@ -32,7 +38,7 @@ function isPosition(value: unknown) {
 }
 
 export function isSaveData(value: unknown): value is SaveData {
-  if (!isObject(value) || (value.version !== 1 && value.version !== 2)
+  if (!isObject(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4 && value.version !== 5)
     || !isNumber(value.seed) || !safeSpawn(value.seed) || !['ember', 'sage', 'azure'].includes(String(value.outfit))
     || !isPosition(value.player) || !isPosition(value.npc) || !isPosition(value.vehicle)
     || !isObject(value.resources) || !isObject(value.terrain) || !isObject(value.calendar)
@@ -46,6 +52,12 @@ export function isSaveData(value: unknown): value is SaveData {
     && Object.hasOwn(buildingCosts, b.kind) && isPosition(b) && isNumber(b.y) && isNumber(b.rotation)
     && (b.charge === undefined || (isNumber(b.charge) && b.charge >= 0 && b.charge <= 20)))) return false;
   if (value.depleted !== undefined && (!Array.isArray(value.depleted) || !value.depleted.every(id => typeof id === 'string' && /^-?\d+,-?\d+$/.test(id)))) return false;
+  if ((value.version === 3 || value.version === 4 || value.version === 5) && (value.appearance === undefined || value.playerName === undefined || value.npcAppearanceSeed === undefined)) return false;
+  if ((value.version === 4 || value.version === 5) && value.wildlife === undefined) return false;
+  if (value.wildlife !== undefined && !isWildlifeState(value.wildlife)) return false;
+  if (value.appearance !== undefined && !isAppearance(value.appearance)) return false;
+  if (value.playerName !== undefined && (typeof value.playerName !== 'string' || value.playerName.trim().length === 0 || value.playerName.length > 24)) return false;
+  if (value.npcAppearanceSeed !== undefined && (!isNumber(value.npcAppearanceSeed) || !Number.isInteger(value.npcAppearanceSeed) || value.npcAppearanceSeed < 0 || value.npcAppearanceSeed > 0xffffffff)) return false;
   if (value.health !== undefined && (!isNumber(value.health) || value.health < 0 || value.health > 100)) return false;
   if (value.tools !== undefined && (!Array.isArray(value.tools) || !value.tools.every(tool => tool === 'axe' || tool === 'pickaxe'))) return false;
   if (value.npcState !== undefined) {

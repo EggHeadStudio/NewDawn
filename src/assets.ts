@@ -1,59 +1,10 @@
 import * as THREE from 'three';
-
-export type Outfit = 'ember' | 'sage' | 'azure';
+export { createCharacter } from './characters';
+export { createEnemy } from './enemies';
+export type { Outfit } from './appearance';
 
 function mat(color: string, roughness = 0.82) {
   return new THREE.MeshStandardMaterial({ color, roughness });
-}
-
-export function createCharacter(outfit: Outfit = 'ember') {
-  const root = new THREE.Group();
-  const colors = {
-    ember: ['#d78a48', '#f1e6ce', '#3c4d67'],
-    sage: ['#79a95d', '#e7dfbd', '#3f5d48'],
-    azure: ['#59a7b8', '#edf0dd', '#48566e'],
-  }[outfit];
-  const skin = mat(colors[0]);
-  const cloth = mat(colors[1]);
-  const accent = mat(colors[2]);
-
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.34, 0.62, 4, 8), cloth);
-  body.position.y = 1.05;
-  body.castShadow = true;
-  root.add(body);
-  const vest = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.68, 0.34), accent);
-  vest.position.set(0, 1.15, 0.05);
-  vest.castShadow = true;
-  root.add(vest);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.34, 10, 8), skin);
-  head.position.y = 1.82;
-  head.castShadow = true;
-  root.add(head);
-  const hair = new THREE.Mesh(new THREE.SphereGeometry(0.35, 9, 5, 0, Math.PI * 2, 0, Math.PI * 0.48), mat('#4b382d'));
-  hair.position.y = 1.94;
-  hair.castShadow = true;
-  root.add(hair);
-
-  const limbData: Array<[number, number, number, THREE.Material]> = [
-    [-0.24, 0.38, 0, cloth], [0.24, 0.38, 0, cloth],
-  ];
-  limbData.forEach(([x, y, z, material]) => {
-    const leg = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, 0.38, 3, 6), material);
-    leg.position.set(x, y, z);
-    leg.castShadow = true;
-    leg.name = x < 0 ? 'legL' : 'legR';
-    root.add(leg);
-  });
-  [-0.43, 0.43].forEach(x => {
-    const arm = new THREE.Mesh(new THREE.CapsuleGeometry(0.09, 0.42, 3, 6), cloth);
-    arm.position.set(x, 1.12, 0);
-    arm.castShadow = true;
-    arm.rotation.z = x < 0 ? -0.12 : 0.12;
-    arm.name = x < 0 ? 'armL' : 'armR';
-    root.add(arm);
-  });
-  root.userData.baseY = 0;
-  return root;
 }
 
 export function createShelter() {
@@ -227,12 +178,3 @@ export function createVehicle() {
   return root;
 }
 
-export function createEnemy() {
-  const root = createCharacter('ember');
-  root.scale.setScalar(0.82);
-  root.traverse(object => {
-    if (object instanceof THREE.Mesh) object.material = mat('#9d4d50');
-  });
-  root.userData.enemy = true;
-  return root;
-}

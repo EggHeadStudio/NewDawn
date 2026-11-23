@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { biomeAt, safeSpawn, seededNoise, terrainHeight } from './world';
+import * as THREE from 'three';
+import { biomeAt, safeSpawn, seededNoise, terrainHeight, World } from './world';
 
 describe('procedural world', () => {
   it('is deterministic for a given seed and coordinate', () => {
@@ -31,5 +32,19 @@ describe('procedural world', () => {
       expect(spawn).not.toBeNull();
       expect(terrainHeight(spawn!.x, spawn!.z, seed)).toBeGreaterThan(0.8);
     }
+  });
+
+  it('updates instanced ground cover with the seasons without changing resources', () => {
+    const world = new World(1847);
+    const countResources = () => world.group.children.filter(child => child.userData.resource).length;
+    const initialResources = countResources();
+    const flowers = world.group.children.find(child => child.userData.groundCover === 'flower') as THREE.InstancedMesh;
+    expect(flowers.count).toBeGreaterThan(0);
+    world.setSeason('Winter');
+    expect(flowers.visible).toBe(false);
+    world.setSeason('Spring');
+    expect(flowers.visible).toBe(true);
+    expect(countResources()).toBe(initialResources);
+    world.dispose();
   });
 });
