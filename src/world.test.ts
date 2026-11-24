@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { biomeAt, safeSpawn, seededNoise, terrainHeight, World } from './world';
 import { CHUNK_SIZE, PLANET_HEIGHT, PLANET_WIDTH, nearestPlanetPosition, planetCoordinates } from './planet';
+import { requiresPickaxe, type DepositKind } from './economy';
 
 describe('procedural world', () => {
   it('is deterministic for a given seed and coordinate', () => {
@@ -123,6 +124,65 @@ describe('procedural world', () => {
     expect(restored.gatherNearest(x, z, 0.1)).toBeUndefined();
     world.dispose();
     restored.dispose();
+  });
+
+  it('mines finite deposits, requires a pickaxe, and preserves partial progress across streaming and reload', () => {
+    const world = new World(1847);
+    const deposit = world.group.children.find(item => item.userData.depositId
+      && requiresPickaxe(item.userData.mineral as DepositKind));
+    expect(deposit).toBeDefined();
+    const { x, z } = deposit!.position;
+    const id = deposit!.userData.depositId as string;
+    expect(world.mineDeposit(deposit!, false)).toMatchObject({ needsPickaxe: true });
+    expect(world.miningSnapshot()).toEqual({});
+    expect(world.mineDeposit(deposit!, true)).toMatchObject({ needsPickaxe: false, progress: 1 });
+    world.updateChunks(160, 160, true);
+    world.updateChunks(x, z, true);
+    const regenerated = world.findNearestDeposit(x, z, 0.1);
+    expect(regenerated?.userData.depositId).toBe(id);
+    expect(world.mineDeposit(regenerated!, true)).toMatchObject({ progress: 2 });
+    const restored = new World(1847);
+    restored.restoreMining(world.miningSnapshot());
+    restored.updateChunks(x, z, true);
+    const restoredDeposit = restored.findNearestDeposit(x, z, 0.1);
+    expect(restored.mineDeposit(restoredDeposit!, true)).toMatchObject({ progress: 3 });
+    expect(restored.findNearestDeposit(x, z, 0.1)).toBeUndefined();
+    restored.updateChunks(160, 160, true);
+    restored.updateChunks(x, z, true);
+    expect(restored.findNearestDeposit(x, z, 0.1)).toBeUndefined();
+    expect(restored.mineDeposit(restoredDeposit!, true)).toBeUndefined();
+    world.dispose();
+    restored.dispose();
+  });
+
+  it('keeps new deposits out of existing saved buildings across chunk reloads and longitude copies', () => {
+    const world = new World(1847);
+    const deposit = world.group.children.find(item => item.userData.depositId)!;
+    expect(deposit).toBeDefined();
+    const { x, z } = deposit.position;
+    world.setDepositExclusions([{ x: x + PLANET_WIDTH, z, radius: 1 }]);
+    expect(world.findNearestDeposit(x, z, 0.1)).toBeUndefined();
+    world.updateChunks(160, 160, true);
+    world.updateChunks(x, z, true);
+    expect(world.findNearestDeposit(x, z, 0.1)).toBeUndefined();
+    expect(world.miningSnapshot()).toEqual({});
+    world.dispose();
+  });
+
+  it('retains the same deposit and mining progress across the longitude seam', () => {
+    const world = new World(1847);
+    world.updateChunks(1536, 180, true);
+    const deposit = world.group.children.find(item => item.userData.depositId && item.position.x > 1536);
+    expect(deposit).toBeDefined();
+    const { x, z } = deposit!.position;
+    const kind = deposit!.userData.mineral;
+    const id = deposit!.userData.depositId;
+    expect(world.mineDeposit(deposit!, true)).toMatchObject({ progress: 1 });
+    world.updateChunks(-1536, 180, true);
+    const wrapped = world.findNearestDeposit(x - PLANET_WIDTH, z, 0.1);
+    expect(wrapped?.userData).toMatchObject({ depositId: id, mineral: kind });
+    expect(world.mineDeposit(wrapped!, true)).toMatchObject({ progress: 2 });
+    world.dispose();
   });
 
   it('rebases long-distance chunks without losing edits or local resource positions', () => {

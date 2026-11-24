@@ -5,9 +5,11 @@ import { safeSpawn } from './world';
 import { isAppearance, type CharacterAppearance } from './appearance';
 import { isWildlifeState, type AnimalState } from './wildlife';
 import { FLOOR_HEIGHT, isStructuralPiece, type StructuralPiece } from './construction';
+import { isMineralInventory, type MineralInventory } from './economy';
+import { isIngots, isSmeltingJob, type Ingots, type SmeltingJob } from './smelting';
 
 export interface SaveData {
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   seed: number;
   outfit: Outfit;
   appearance?: CharacterAppearance;
@@ -17,11 +19,15 @@ export interface SaveData {
   player: { x: number; z: number; y?: number };
   npc: { x: number; z: number };
   resources: Inventory;
-  buildings: Array<{ kind: BuildingKind; x: number; z: number; y: number; rotation: number; charge?: number }>;
+  buildings: Array<{ kind: BuildingKind; x: number; z: number; y: number; rotation: number; charge?: number; smelting?: SmeltingJob }>;
   structures?: StructuralPiece[];
   autoRoof?: boolean;
   terrain: Record<string, number>;
   depleted?: string[];
+  minerals?: MineralInventory;
+  mining?: Record<string, number>;
+  ingots?: Ingots;
+  ironPickaxe?: boolean;
   npcState?: NpcState;
   health?: number;
   tools?: Tool[];
@@ -41,7 +47,7 @@ function isPosition(value: unknown, limit: number) {
 }
 
 export function isSaveData(value: unknown): value is SaveData {
-  if (!isObject(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4 && value.version !== 5 && value.version !== 6 && value.version !== 7)
+  if (!isObject(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4 && value.version !== 5 && value.version !== 6 && value.version !== 7 && value.version !== 8)
     || !isNumber(value.seed) || !safeSpawn(value.seed) || !['ember', 'sage', 'azure'].includes(String(value.outfit))
     || !isPosition(value.player, value.version >= 6 ? 10000000 : 48)
     || !isPosition(value.npc, value.version >= 6 ? 10000000 : 48)
@@ -54,10 +60,13 @@ export function isSaveData(value: unknown): value is SaveData {
     || (value.calendar.speed !== undefined && (!isNumber(value.calendar.speed) || value.calendar.speed < 0.5 || value.calendar.speed > 8))) return false;
   if (!Object.entries(value.terrain).every(([key, n]) => /^-?\d+,-?\d+$/.test(key) && isNumber(n) && n >= -1.8 && n <= 0)) return false;
   const coordinateLimit = value.version >= 6 ? 10000000 : 48;
+  const version = value.version;
   if (!value.buildings.every(b => isObject(b) && typeof b.kind === 'string'
     && Object.hasOwn(buildingCosts, b.kind) && isPosition(b, coordinateLimit) && isNumber(b.y) && isNumber(b.rotation)
-    && (b.charge === undefined || (isNumber(b.charge) && b.charge >= 0 && b.charge <= 20)))) return false;
-  if (value.version === 7) {
+    && (b.charge === undefined || (isNumber(b.charge) && b.charge >= 0 && b.charge <= 20))
+    && (version >= 8 || b.kind !== 'smelter')
+    && (b.smelting === undefined || (version >= 8 && b.kind === 'smelter' && isSmeltingJob(b.smelting))))) return false;
+  if (value.version >= 7) {
     if (!isObject(value.player) || !isNumber(value.player.y) || Math.abs(value.player.y) > 10000
       || !Array.isArray(value.structures) || value.structures.length > 10000
       || !value.structures.every(isStructuralPiece) || (value.autoRoof !== undefined && typeof value.autoRoof !== 'boolean')) return false;
@@ -85,6 +94,13 @@ export function isSaveData(value: unknown): value is SaveData {
     }
     if (doors.some(location => !frames.has(location))) return false;
   } else if (value.structures !== undefined) return false;
+  if (value.version === 8 && (!isMineralInventory(value.minerals) || !isIngots(value.ingots)
+    || typeof value.ironPickaxe !== 'boolean'
+    || (value.ironPickaxe && (!Array.isArray(value.tools) || !value.tools.includes('pickaxe')))
+    || !isObject(value.mining)
+    || Object.keys(value.mining).length > 100000
+    || !Object.entries(value.mining).every(([key, n]) => /^-?\d+,-?\d+$/.test(key)
+      && typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= 3))) return false;
   if (value.depleted !== undefined && (!Array.isArray(value.depleted) || !value.depleted.every(id => typeof id === 'string' && /^-?\d+,-?\d+$/.test(id)))) return false;
   if (value.version >= 3 && (value.appearance === undefined || value.playerName === undefined || value.npcAppearanceSeed === undefined)) return false;
   if (value.version >= 4 && value.wildlife === undefined) return false;

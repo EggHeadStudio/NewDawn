@@ -75,7 +75,7 @@ test('preserves a legacy settlement and walks beyond the old island', async ({ p
   expect(x).toBeGreaterThan(54);
   await save(page);
   const traveled = await readRecord(page, 'primary');
-  expect(traveled).toMatchObject({ version: 7, resources: { wood: 17 }, terrain: { '-6,-6': -0.35 },
+  expect(traveled).toMatchObject({ version: 8, resources: { wood: 17 }, terrain: { '-6,-6': -0.35 },
     npcState: { recruited: true }, buildings: [{ kind: 'storage', x: -10, z: -10 }] });
   expect(traveled.player.x).toBeGreaterThan(48);
   await page.reload();

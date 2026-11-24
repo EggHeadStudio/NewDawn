@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { isSaveData } from './save';
 import { defaultAppearance } from './appearance';
+import { emptyMinerals } from './economy';
 
 function oldSave() {
   return {
@@ -39,5 +40,22 @@ describe('saved worlds', () => {
     expect(isSaveData({ ...save, structures: [frame, frame] })).toBe(false);
     expect(isSaveData({ ...save, structures: [{ ...frame, x: 23 }] })).toBe(false);
     expect(isSaveData({ ...save, structures: [{ ...frame, y: NaN }] })).toBe(false);
+  });
+  it('validates version 8 mining state without changing legacy saves', () => {
+    const save = { ...oldSave(), version: 8, appearance: defaultAppearance(), playerName: 'Survivor',
+      npcAppearanceSeed: 53917, wildlife: [], player: { x: 0, y: 1, z: 5 }, structures: [],
+      minerals: { ...emptyMinerals(), ironOre: 2 }, mining: { '6,6': 2 }, ingots: { iron: 0, copper: 0 }, ironPickaxe: false };
+    expect(isSaveData(save)).toBe(true);
+    expect(isSaveData({ ...save, minerals: { ...save.minerals, ironOre: -1 } })).toBe(false);
+    expect(isSaveData({ ...save, minerals: { ...save.minerals, coal: 0.5 } })).toBe(false);
+    expect(isSaveData({ ...save, mining: { '6,6': 4 } })).toBe(false);
+    expect(isSaveData({ ...save, mining: { bad: 1 } })).toBe(false);
+    expect(isSaveData({ ...save, mining: undefined })).toBe(false);
+    expect(isSaveData({ ...save, ironPickaxe: true })).toBe(false);
+    expect(isSaveData({ ...save, ironPickaxe: true, tools: ['pickaxe'] })).toBe(true);
+    expect(isSaveData({ ...save, buildings: [{ kind: 'smelter', x: 4, z: 4, y: 1, rotation: 0,
+      smelting: { ore: 'ironOre', remaining: 3 } }] })).toBe(true);
+    expect(isSaveData({ ...save, buildings: [{ kind: 'smelter', x: 4, z: 4, y: 1, rotation: 0,
+      smelting: { ore: 'ironOre', remaining: -1 } }] })).toBe(false);
   });
 });

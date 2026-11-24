@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { appearanceFromSeed, defaultAppearance, isAppearance } from './appearance';
 import { createCharacter } from './assets';
 import { isSaveData } from './save';
+import { Box3, Mesh, Vector3 } from 'three';
+import { disposeCharacter } from './characters';
 
 describe('character appearance', () => {
   it('creates stable, valid NPC appearances from saved seeds', () => {
@@ -36,5 +38,21 @@ describe('character appearance', () => {
     expect(isSaveData({ ...save, appearance: { ...save.appearance, hat: 'invalid' } })).toBe(false);
     expect(isSaveData({ ...save, playerName: '' })).toBe(false);
     expect(isSaveData({ ...save, version: 5, wildlife: [], appearance: { ...save.appearance, clothing: 'fur', hair: 'braided', hat: 'helmet' } })).toBe(true);
+  });
+  it('changes the actual torso and facial meshes for body and face selections', () => {
+    const masculine = createCharacter({ ...defaultAppearance(), face: 'angular' });
+    const feminine = createCharacter({ ...defaultAppearance(), body: 'feminine', face: 'round' });
+    const maleChest = masculine.getObjectByName('chest');
+    const femaleChest = feminine.getObjectByName('chest');
+    expect(maleChest).toBeInstanceOf(Mesh);
+    expect(femaleChest).toBeInstanceOf(Mesh);
+    const maleWidth = new Box3().setFromObject(maleChest!).getSize(new Vector3()).x;
+    const femaleWidth = new Box3().setFromObject(femaleChest!).getSize(new Vector3()).x;
+    expect(maleWidth).toBeGreaterThan(femaleWidth);
+    const maleFace = masculine.getObjectByName('face') as Mesh;
+    const femaleFace = feminine.getObjectByName('face') as Mesh;
+    expect(Array.from(maleFace.geometry.getAttribute('position').array)).not.toEqual(Array.from(femaleFace.geometry.getAttribute('position').array));
+    disposeCharacter(masculine);
+    disposeCharacter(feminine);
   });
 });

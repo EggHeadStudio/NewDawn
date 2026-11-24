@@ -1,4 +1,30 @@
-# Test report — Batch 002 partial world milestone
+# Test report — Batch 003C partial economy milestone
+
+## Mining and smelting
+
+- `npm.cmd test`: 57 unit tests passed in 13 files. New checks cover tool gating, finite deposit progress through streaming and reload, longitude-seam progress, saved-construction exclusions, save validation and atomic smelting inputs/output.
+- `npm.cmd run build`: TypeScript and the production build passed. Vite still warns that the main bundle exceeds 500 kB.
+- `$env:PLAYWRIGHT_BROWSER_CHANNEL='msedge'; npm.cmd run test:e2e`: all 22 browser tests passed before the subsequent addition of two mobile cases.
+- `$env:PLAYWRIGHT_BROWSER_CHANNEL='msedge'; npm.cmd run test:e2e -- mining`: all five updated mining tests passed. Desktop and emulated mobile portrait/landscape tests craft a pickaxe, mine an iron deposit over three strikes and reload mid-progress. Desktop and emulated landscape-touch fixture-assisted tests construct a smelter, reserve ore and fuel, reload a running job, produce two ingots, forge the iron pickaxe and verify its doubled mining yield. Fixtures provide starting resources and position the player; output is not injected.
+- These tests do not establish the full requested manufacturing/research/construction journey. No physical hardware was tested. Natural long-distance resource discovery, device performance and interactions with existing complex settlements need more testing.
+
+## Authored character integration
+
+- `npm.cmd test`: 52 tests passed in 12 files, including animation-state selection.
+- `npm.cmd run build`: TypeScript and the production build passed; Vite warns that the main bundle exceeds 500 kB.
+- `$env:PLAYWRIGHT_BROWSER_CHANNEL='msedge'; npm.cmd run test:e2e -- authored-character`: two browser tests passed. They load real glTF models and clips, check independent skeletons and shared geometry, animate after another instance is disposed, and verify an asset failure reports an error and leaves the procedural fallback.
+- `$env:PLAYWRIGHT_BROWSER_CHANNEL='msedge'; npm.cmd run test:e2e`: all 19 browser tests passed. After adding the creator's approximation notice, the nine building/creator browser tests were rerun and passed. An earlier full-suite run had one timeout while source files were being edited during the run; the subsequent stable run passed.
+- In an isolated Edge production-preview context, waited for the service worker, switched offline, reloaded and opened the creator. All 47 character runtime files were in the shell cache and the authored preview rendered without a page error.
+- Captured creator, masculine/feminine presets, the modern-option approximation, mobile creator, real daytime gameplay with Mira, and nighttime gameplay in `art-review/batch-003b/`. Nighttime used a local save with the calendar advanced to day 3; its necromancer is partially obscured. These are emulated browser views, not physical-device tests. The modern option renders a peasant outfit, not modern clothing. The complete enemy screenshot set, appearance matching, character LOD, physical-device performance and premium visual acceptance remain unverified.
+- The mining/manufacturing/research journey was not implemented or tested.
+
+## Character geometry milestone
+
+- `npm.cmd test`: 51 tests passed in 11 files, including character appearance geometry and enemy part checks.
+- `npm.cmd run build`: TypeScript and the production build passed. Vite still warns that the main bundle exceeds 500 kB.
+- `$env:PLAYWRIGHT_BROWSER_CHANNEL='msedge'; npm.cmd run test:e2e`: all 17 browser tests passed, including appearance save/continue and existing building, construction and world regressions. Some construction and world scenarios use fixtures.
+- Screenshots were captured with local Playwright and Microsoft Edge: customization, masculine/feminine/Viking/modern options, and normal-distance daytime and nighttime gameplay. The night image uses a modified local save time. Enemy close-ups were rendered in a separate review scene, not captured from actual encounters. The screenshots are in the session evidence directory `C:\Users\mfi0alta\.copilot\session-state\a0513ca4-0a0a-482f-8c04-734e1218fa31\files\batch003-evidence`; they are not shipped with the game.
+- Visual review found improved body shapes but simplified faces and remaining toy-like features. No physical device, performance benchmark, authored rig, LOD, full character art acceptance or complete Batch 003 gameplay journey was verified.
 
 ## Modular construction milestone
 

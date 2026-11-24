@@ -1,8 +1,33 @@
-# Development status — Batch 002 partial world milestone
+# Development status — Batch 003C partial economy milestone
 
-Batch 001 and Batch 002 are **not complete**. This milestone removes the original island movement boundary and adds a streamed-world foundation; it is not the full planet or civilization game described in the master prompt.
+## Batch 003C — incomplete
+
+- Added the permanent [master roadmap](MASTER_ROADMAP.md) and [implementation tracker](IMPLEMENTATION_TRACKER.md). These record the larger vision, current evidence and unfinished dependencies; the 003C source attachment was not available in this resumed session, so the documents were reconstructed from the prior audit and existing project documentation rather than rechecked against its full text.
+- Added seeded, finite three-hit stone, clay, sand, coal, copper-ore, iron-ore and limestone deposits to streamed chunks without changing the existing starter-resource layout. Clay and sand can be gathered by hand; the rest need a pickaxe. Progress and mineral inventory survive chunk unloading and saves. Existing saved buildings and pieces exclude newly generated deposits.
+- Added a buildable smelter: two iron or copper ore and one coal are reserved for an eight-second active-simulation job, which produces one ingot. A job survives saving and reloading. Two iron ingots and two wood upgrade an existing pickaxe, doubling deposit yield. The machine is interacted with using E or mobile B; its menu pauses simulation and must be closed for production to advance.
+- Version 8 validates and saves the economy state, and loading older saves creates a one-time `pre-economy-backup`. Old resources, prefab buildings, structures and NPC jobs remain in their existing formats. Browser-local backups are not substitutes for exported saves.
+- **Not complete:** woodworking, kiln, metalworking and chemistry workstations; technology and research; discoveries; brick, glass and alternate-material construction; manufacturing chains and the full requested progression are absent. Copper ingots, clay, sand and limestone have no further uses. Deposit variety is seeded rather than geologically or biome distributed; deposit placement and labels need gameplay and physical-device review. Stone can still also be gathered from legacy rocks without a pickaxe. No new character art was added, and the earlier visual acceptance limitations remain.
+- The new browser tests use save fixtures to position the player and provide starting resources; they exercise actual mining, construction, fuel consumption, processing and the tool upgrade, including emulated landscape touch, but not a continuous unassisted survival journey. Physical devices remain untested. See [TEST_REPORT.md](TEST_REPORT.md).
+
+## Batch 003B — incomplete
+
+- The player, Mira and raiders now asynchronously load Quaternius skinned glTF heads, fantasy outfits and animation clips. They use independent cloned skeletons and cached model prototypes; the preview uses the same path. Idle, walking, sprinting, sword-swing, hit and pickup clips blend between states. Mining and chopping currently use the sword swing; building uses pickup and carrying uses ordinary idle/walk. Other enemy types remain procedural.
+- The old procedural models remain as a fallback if loading fails. Assets are bundled locally, and the production offline shell precaches them. Existing appearance data and version-7 saves are unchanged. The free fantasy pack has two outfit families per body type: shirt/jacket map to peasant, tunic/fur to ranger; hair and beard options map approximately. Face shape, caps, beanies and helmets are not represented by the authored assets, moustaches use the beard, braids use long hair, and modern clothing is not available. Skin tinting is approximate, not a full replacement for all previous customization.
+- This is **not the completed character acceptance gate**. There is no character LOD, specialized carry/work/defeat animation, full enemy asset selection, authored modern outfit, profession system or complete equipment attachment system. The attached existing tools need further visual tuning. The free base models have limited skin textures and clothing choices; matching separate head, hair and outfit skeletons uses several animation mixers per character. Approximate head extraction and skin/outfit color matching need more art review.
+- Reviewed real creator and gameplay screenshots in `art-review/batch-003b/`. Proportions and clothing are visibly less toy-like in the creator, but characters are still small and dark at normal gameplay distance; the nighttime necromancer is partly hidden by trees. The requested full set of readable in-game enemy and modern-character screenshots and the final visual acceptance review remain outstanding. No physical-device performance measurement was performed.
+- At the end of 003B, Phase 1 remained unfinished and new deposits, processing, research, technology and new building materials had not started. The limited 003C mining and smelting progress is described above.
+
+Batches 001–003B are **not complete**. The earlier streamed-world foundation is not the full planet or civilization game described in the master prompt.
 
 Batch 001C added character customization, a limited wildlife simulation, environmental art, and an offline/update foundation. The full wildlife roster and technology/vehicle progression remain missing.
+
+## Batch 003 character geometry milestone — partial
+
+- The player, NPC and enemy shared humanoid now use shaped torso, hip, limb, boot and face meshes in place of much of the earlier rounded geometry. Hands have individual fingers, face and body presets change geometry, and the weapon has a shaped blade. Existing articulated joint names, animations and appearance options remain in use. The customization preview camera is closer.
+- Enemy-specific meshes were adjusted for the revised body, including a skull and sockets for undead, a cowl and robe for necromancers, and breastplates and shields for armored enemies. Their gameplay profiles and existing day-based progression are unchanged.
+- Existing appearance and version-7 save formats are unchanged. These are still procedural object hierarchies with manually animated joints, not rigged authored GLB assets, animation clips or equipment. Blender was not found in the checked local locations. No new asset-authoring pipeline, character LOD, shared character geometry, manufactured outfits, profession archetypes or civilization-driven enemies were added.
+- Preview and actual daytime and fixture-assisted nighttime gameplay screenshots were reviewed; isolated enemy renders were also examined. At normal camera distance the models remain small, facial expression is limited, and the characters still look simplified and somewhat toy-like. The character art requirement is **not met**. Mobile hardware performance and a complete art review on physical devices remain unverified.
+- This milestone did not implement mining, processing, chemistry, technology, manufactured transport or the other outstanding Batch 003 systems. See [TEST_REPORT.md](TEST_REPORT.md) for validation and screenshot locations.
 
 ## Batch 002 modular construction milestone — partial
 
@@ -28,7 +53,7 @@ Batch 001C added character customization, a limited wildlife simulation, environ
 - Existing NPC appearance seeds still use the original option pools. Version 5 saves include the expanded cosmetics; versions 1–4 remain readable.
 - Night spawns can include raiders, undead, necromancers, armored fighters, night creatures and a larger champion. Later types become eligible by elapsed game day, **not** civilization era. Their health, speed, attack range and cooldown differ; necromancers keep distance and fire damaging projectiles. Existing enemies and projectiles are transient and are not saved.
 - Screenshots were inspected in the customization preview and in actual gameplay. The models are more detailed than the starting assets but still have simplified, somewhat toy-like proportions and limited expression; they do **not** meet the requested final premium character-art quality. Trees can obstruct characters and enemies at gameplay camera distance.
-- There is no equipment inventory, profession-based appearance, manufactured armor, civilization-era progression, unique boss encounter or full enemy-faction system. Models have no LOD or shared character mesh resources; mobile performance has not been measured on physical devices.
+- There is no equipment inventory, profession-based appearance, manufactured armor, civilization-era progression, unique boss encounter or full enemy-faction system. The older procedural models have no LOD or shared character mesh resources; mobile performance has not been measured on physical devices.
 
 ## Gameplay and UI quality correction
 
@@ -68,7 +93,7 @@ Batch 001C added character customization, a limited wildlife simulation, environ
 
 - **World:** periodic and polar terrain sampling and basic entity projection are implemented, but actual spherical distance, long-distance polar gameplay, distant simulation, boats and cross-ocean travel are incomplete. No terrain LOD or worker-based generation. Trees/resources are individual meshes and need profiling and instancing.
 - **Camera and controls:** simultaneous touch gestures were emulated, but physical-device testing is still needed. Camera collision and building clearance are approximations, not full physics; trees can still obscure the player in some arrangements. Camera and terrain-distance settings are not persisted; the map remains a local minimap and coordinate readout.
-- **Gameplay:** only axe and pickaxe crafting; no hunger, stamina simulation, food consumption, construction progress, repair, demolition, explosions, throwable weapons or comprehensive collision with natural props. The map is a local minimap and coordinate toast, not an explored-world map.
+- **Gameplay:** basic tools and the iron-pickaxe upgrade are craftable; no hunger, stamina simulation, food consumption, construction progress, repair, explosions, throwable weapons or comprehensive collision with natural props. Structural pieces can be demolished, but prefabs cannot. The map is a local minimap and coordinate toast, not an explored-world map.
 - **NPC:** one survivor, two gathering jobs, shared inventory on delivery, basic avoidance and fleeing; no home, needs, advanced navigation, storage capacity or full settlement management.
 - **Power:** connections are automatic by distance, not player-drawn wires or independently modeled mechanical networks; battery and lamp behavior is minimal and no power inspection UI is available.
 - **Rover:** no vehicle health, trailer or cargo; simplified movement and collision, no full terrain physics.
@@ -83,4 +108,4 @@ Batch 001C added character customization, a limited wildlife simulation, environ
 
 ## Next milestone
 
-Complete modular construction support, stair/collision and room/camera behavior; stream and profile structural state and test a complete house on real devices. Then add mining, material processing and technology, while continuing spherical traversal and streamed entity work without breaking migrated saves.
+Expand the economy into the remaining workstations and material chains, then add data-driven research and alternate-material construction with an end-to-end browser journey. Preserve version 1–8 saves. Continue authored character/art review and modular construction, spherical traversal and streamed entity work.

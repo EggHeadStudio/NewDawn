@@ -1,9 +1,11 @@
 import * as THREE from 'three';
 import { defaultAppearance, type CharacterAppearance, type Outfit } from './appearance';
+import { disposeAuthoredCharacter } from './authored-character';
 
-type Material = THREE.MeshStandardMaterial;
+type Surface = THREE.MeshStandardMaterial;
+type Ring = readonly [y: number, width: number, depth: number, offsetZ?: number];
 
-function material(color: string, roughness = 0.94, metalness = 0) {
+function material(color: string, roughness = 0.96, metalness = 0) {
   return new THREE.MeshStandardMaterial({ color, roughness, metalness });
 }
 
@@ -12,213 +14,277 @@ function part(parent: THREE.Object3D, geometry: THREE.BufferGeometry, surface: T
   const mesh = new THREE.Mesh(geometry, surface);
   mesh.position.set(...position);
   mesh.castShadow = true;
+  mesh.receiveShadow = true;
   if (name) mesh.name = name;
   parent.add(mesh);
   return mesh;
 }
 
-function ellipsoid(parent: THREE.Object3D, surface: THREE.Material, position: [number, number, number],
-  scale: [number, number, number], name?: string) {
-  const mesh = part(parent, new THREE.SphereGeometry(1, 12, 8), surface, position, name);
-  mesh.scale.set(...scale);
-  return mesh;
+export function shapedGeometry(rings: readonly Ring[], sides = 12) {
+  const vertices: number[] = [];
+  const indices: number[] = [];
+  for (const [y, width, depth, offsetZ = 0] of rings) {
+    for (let side = 0; side < sides; side++) {
+      const angle = side / sides * Math.PI * 2;
+      vertices.push(Math.sin(angle) * width, y, Math.cos(angle) * depth + offsetZ);
+    }
+  }
+  for (let row = 0; row < rings.length - 1; row++) {
+    for (let side = 0; side < sides; side++) {
+      const a = row * sides + side;
+      const b = row * sides + (side + 1) % sides;
+      const c = a + sides;
+      const d = b + sides;
+      indices.push(a, b, c, b, d, c);
+    }
+  }
+  const bottom = vertices.length / 3;
+  vertices.push(0, rings[0][0], rings[0][3] ?? 0);
+  const top = vertices.length / 3;
+  vertices.push(0, rings[rings.length - 1][0], rings[rings.length - 1][3] ?? 0);
+  for (let side = 0; side < sides; side++) {
+    const next = (side + 1) % sides;
+    indices.push(bottom, side, next);
+    indices.push(top, (rings.length - 1) * sides + next, (rings.length - 1) * sides + side);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
 }
 
-function taperedFace(angular: boolean) {
-  const geometry = new THREE.SphereGeometry(1, angular ? 10 : 14, 10);
-  const positions = geometry.attributes.position;
-  for (let i = 0; i < positions.count; i++) {
-    const x = positions.getX(i);
-    const y = positions.getY(i);
-    const z = positions.getZ(i);
-    const jaw = y < 0 ? 0.83 + (y + 1) * 0.17 : 1;
-    positions.setXYZ(i, x * 0.175 * jaw, y * 0.225, z * (z > 0 ? 0.16 : 0.175));
+function sculpt(parent: THREE.Object3D, surface: Surface, rings: readonly Ring[],
+  position: [number, number, number], name?: string, sides = 12) {
+  return part(parent, shapedGeometry(rings, sides), surface, position, name);
+}
+
+function faceGeometry(angular: boolean, feminine: boolean) {
+  const geometry = new THREE.SphereGeometry(1, 24, 16);
+  const vertices = geometry.attributes.position;
+  for (let i = 0; i < vertices.count; i++) {
+    const nx = vertices.getX(i);
+    const ny = vertices.getY(i);
+    const nz = vertices.getZ(i);
+    const jaw = ny < -0.2 ? (angular ? 0.9 : 0.83) + (ny + 1) * 0.16 - (feminine ? 0.04 : 0) : 1;
+    const cheek = 1 + 0.08 * Math.exp(-(((ny + 0.12) / 0.3) ** 2));
+    let z = nz * (nz >= 0 ? 0.115 : 0.13);
+    if (nz > 0) {
+      const nose = Math.exp(-((nx / 0.22) ** 2) - ((ny + 0.08) / 0.34) ** 2) * 0.045;
+      const eyes = Math.exp(-(((Math.abs(nx) - 0.42) / 0.22) ** 2) - ((ny - 0.13) / 0.13) ** 2) * 0.012;
+      z += (nose - eyes) * nz;
+    }
+    vertices.setXYZ(i, nx * 0.13 * jaw * cheek, ny * 0.165, z);
   }
   geometry.computeVertexNormals();
   return geometry;
 }
 
-function cloak(parent: THREE.Object3D, surface: THREE.Material, length: number) {
+function clothPanel(parent: THREE.Object3D, surface: Surface, width: number, length: number) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute([
-    -0.31, 0.51, -0.12, 0, 0.53, -0.16, 0.31, 0.51, -0.12,
-    -0.36, 0.05, -0.22, 0, 0.02, -0.25, 0.36, 0.05, -0.22,
-    -0.42, -length, -0.31, 0, -length - 0.04, -0.35, 0.42, -length, -0.31,
+    -width, 0.48, -0.11, 0, 0.49, -0.14, width, 0.48, -0.11,
+    -width * 1.07, 0.08, -0.18, 0, 0.06, -0.20, width * 1.07, 0.08, -0.18,
+    -width * 1.16, -length, -0.23, 0, -length - 0.025, -0.25, width * 1.16, -length, -0.23,
   ], 3));
   geometry.setIndex([0, 3, 1, 1, 3, 4, 1, 4, 2, 2, 4, 5, 3, 6, 4, 4, 6, 7, 4, 7, 5, 5, 7, 8]);
   geometry.computeVertexNormals();
-  return part(parent, geometry, surface, [0, 0, 0], 'cloak');
+  const cloth = surface.clone();
+  cloth.side = THREE.DoubleSide;
+  return part(parent, geometry, cloth, [0, 0, 0], 'cloak');
 }
 
-function braid(parent: THREE.Object3D, surface: Material, x: number, y: number, z: number, length: number) {
+function braid(parent: THREE.Object3D, surface: Surface, x: number, z: number, length: number) {
   for (let i = 0; i < length; i++) {
-    const segment = ellipsoid(parent, surface, [x + (i % 2 ? 0.018 : -0.018), y - i * 0.085, z], [0.048, 0.07, 0.045]);
-    segment.rotation.z = i % 2 ? 0.3 : -0.3;
+    const lock = part(parent, new THREE.CapsuleGeometry(0.021, 0.045, 3, 6), surface,
+      [x + (i % 2 ? 0.012 : -0.012), -0.04 - i * 0.052, z]);
+    lock.rotation.z = i % 2 ? 0.28 : -0.28;
   }
 }
 
-function heldTool(arm: THREE.Group, kind: 'chop' | 'mine' | 'weapon', leather: Material, metal: Material) {
+function heldTool(arm: THREE.Group, kind: 'chop' | 'mine' | 'weapon', wood: Surface, metal: Surface) {
   const tool = new THREE.Group();
   tool.name = `tool-${kind}`;
-  tool.position.set(0, -0.25, 0.09);
+  tool.position.set(0, -0.25, 0.06);
   tool.rotation.x = -0.5;
   tool.visible = false;
-  const length = kind === 'weapon' ? 0.72 : 0.58;
-  part(tool, new THREE.CylinderGeometry(0.025, 0.035, length, 6), leather, [0, -length * 0.35, 0]);
   if (kind === 'weapon') {
-    const blade = part(tool, new THREE.BoxGeometry(0.09, 0.48, 0.035), metal, [0, 0.12, 0]);
-    blade.rotation.z = 0.1;
-    part(tool, new THREE.BoxGeometry(0.19, 0.04, 0.055), metal, [0, -0.12, 0]);
+    part(tool, new THREE.CylinderGeometry(0.025, 0.028, 0.17, 7), wood, [0, -0.10, 0]);
+    const bladeShape = new THREE.Shape();
+    bladeShape.moveTo(-0.035, 0);
+    bladeShape.lineTo(-0.035, 0.38);
+    bladeShape.lineTo(0, 0.48);
+    bladeShape.lineTo(0.035, 0.38);
+    bladeShape.lineTo(0.035, 0);
+    bladeShape.closePath();
+    part(tool, new THREE.ExtrudeGeometry(bladeShape, { depth: 0.018, bevelEnabled: false }), metal, [0, 0, -0.009]);
+    part(tool, new THREE.BoxGeometry(0.17, 0.028, 0.045), metal, [0, 0, 0]);
+    part(tool, new THREE.SphereGeometry(0.032, 8, 6), metal, [0, -0.20, 0]);
   } else {
-    const head = part(tool, new THREE.BoxGeometry(kind === 'mine' ? 0.42 : 0.24, 0.11, 0.08), metal, [0.08, 0.18, 0]);
+    part(tool, new THREE.CylinderGeometry(0.022, 0.03, 0.58, 6), wood, [0, -0.20, 0]);
+    const head = part(tool, new THREE.BoxGeometry(kind === 'mine' ? 0.4 : 0.23, 0.1, 0.07), metal, [0.08, 0.18, 0]);
     head.rotation.z = kind === 'mine' ? -0.12 : 0.2;
   }
   arm.add(tool);
 }
 
+function hand(parent: THREE.Object3D, surface: Surface, side: number, fingerGeometry: THREE.BufferGeometry) {
+  sculpt(parent, surface, [[-0.09, 0.04, 0.027], [-0.015, 0.055, 0.034], [0.025, 0.045, 0.03]],
+    [0, -0.25, 0], undefined, 8);
+  const thumb = part(parent, new THREE.CapsuleGeometry(0.014, 0.035, 3, 6), surface, [side * -0.052, -0.27, 0.012]);
+  thumb.rotation.z = side * -0.5;
+  for (let finger = 0; finger < 4; finger++) {
+    const digit = part(parent, fingerGeometry, surface, [(finger - 1.5) * 0.022, -0.35, 0.003]);
+    if (finger === 0 || finger === 3) digit.scale.y = 0.87;
+    digit.rotation.z = (finger - 1.5) * 0.045;
+  }
+}
+
 export function createCharacter(input: Outfit | CharacterAppearance = 'ember') {
   const appearance = typeof input === 'string' ? defaultAppearance(input) : input;
   const root = new THREE.Group();
-  const skin = material({ light: '#d8a994', warm: '#b67d5f', brown: '#875744', deep: '#593b34' }[appearance.skin]);
-  const hair = material({ dark: '#282727', brown: '#49362c', blond: '#ae8d60', red: '#8c4a35', silver: '#aba99d' }[appearance.hairColor]);
+  const skin = material({ light: '#d3a68e', warm: '#b98365', brown: '#8e604b', deep: '#5e4035' }[appearance.skin]);
+  const hair = material({ dark: '#282727', brown: '#49362c', blond: '#a98a60', red: '#874d39', silver: '#a6a49a' }[appearance.hairColor]);
   const palette = {
-    ember: ['#9a5843', '#c4b598', '#484b4a'],
-    sage: ['#687d5c', '#c4b598', '#404d43'],
-    azure: ['#537985', '#c6bda8', '#444d57'],
+    ember: ['#885b4b', '#c4b8a0', '#41494a'],
+    sage: ['#66745c', '#c4b8a0', '#41483e'],
+    azure: ['#526f78', '#c4b8a0', '#444a51'],
   }[appearance.outfit];
   const outer = material(palette[0]);
   const linen = material(palette[1]);
   const trousers = material(palette[2]);
   const leather = material('#594535');
   const darkLeather = material('#392f29');
-  const fur = material('#b4a284');
-  const metal = material('#858b85', 0.72, 0.35);
-  const eyes = material('#272b2a');
-  const shape = appearance.body === 'feminine' ? 0.9 : 1;
+  const fur = material('#a99a80');
+  const metal = material('#808680', 0.72, 0.36);
+  const eyes = material('#282b29');
+  const eyeWhite = material('#cdbdac');
+  const fingerGeometry = new THREE.CapsuleGeometry(0.009, 0.035, 2, 5);
+  const shape = appearance.body === 'feminine' ? 0.88 : 1;
   const rugged = appearance.clothing === 'tunic' || appearance.clothing === 'fur';
+  const jacket = appearance.clothing !== 'shirt';
 
   const torso = new THREE.Group();
   torso.name = 'torso';
-  torso.position.y = 0.91;
+  torso.position.y = 0.96;
   root.add(torso);
-  const chest = ellipsoid(torso, appearance.clothing === 'shirt' ? linen : outer, [0, 0.35, 0], [0.34 * shape, 0.42, 0.20], 'chest');
-  chest.rotation.x = -0.04;
-  const hem = part(torso, new THREE.CylinderGeometry(0.25 * shape, 0.29 * shape, 0.27, 8), appearance.clothing === 'shirt' ? linen : outer, [0, 0.08, 0]);
-  hem.scale.z = 0.72;
-  const collar = part(torso, new THREE.BoxGeometry(0.25, 0.09, 0.08), rugged ? fur : linen, [0, 0.62, 0.14]);
-  collar.rotation.x = -0.25;
-  for (const side of [-1, 1]) {
-    const lapel = part(torso, new THREE.BoxGeometry(0.055, 0.25, 0.035), rugged ? leather : linen, [side * 0.105, 0.45, 0.19]);
-    lapel.rotation.z = side * 0.24;
-  }
-  part(torso, new THREE.BoxGeometry(0.57 * shape, 0.085, 0.36), leather, [0, 0.05, 0], 'belt');
-  part(torso, new THREE.BoxGeometry(0.085, 0.07, 0.025), metal, [0, 0.05, 0.19]);
-  const strap = part(torso, new THREE.BoxGeometry(0.055, 0.61, 0.035), darkLeather, [0.04, 0.35, 0.205]);
-  strap.rotation.z = -0.48;
-  const pouch = ellipsoid(torso, leather, [0.24 * shape, -0.01, 0.17], [0.10, 0.12, 0.06], 'pouch');
-  pouch.rotation.z = -0.1;
-  if (rugged) {
-    const capeMaterial = outer.clone();
-    capeMaterial.side = THREE.DoubleSide;
-    cloak(torso, capeMaterial, appearance.clothing === 'fur' ? 0.54 : 0.34);
+  const hipWidth = appearance.body === 'feminine' ? 0.235 : 0.22;
+  const waistWidth = appearance.body === 'feminine' ? 0.19 : 0.21;
+  sculpt(torso, jacket ? outer : linen, [
+    [-0.06, hipWidth, 0.135], [0.04, hipWidth + 0.01, 0.145], [0.18, waistWidth, 0.135],
+    [0.36, 0.255 * shape, 0.155], [0.51, 0.29 * shape, 0.14], [0.59, 0.22 * shape, 0.10], [0.64, 0.095, 0.075],
+  ], [0, 0, 0], 'chest');
+  sculpt(torso, trousers, [[-0.12, hipWidth - 0.02, 0.12], [0, hipWidth + 0.01, 0.14], [0.10, hipWidth, 0.13]], [0, 0, 0], 'hips');
+  const collar = sculpt(torso, rugged ? fur : linen, [[0, 0.105, 0.075], [0.075, 0.12, 0.085]], [0, 0.55, 0], 'collar');
+  collar.rotation.x = -0.08;
+  if (jacket) {
     for (const side of [-1, 1]) {
-      const shoulder = ellipsoid(torso, fur, [side * 0.28 * shape, 0.57, -0.03], [0.18, 0.095, 0.20]);
-      shoulder.rotation.z = side * 0.25;
+      const lapel = part(torso, new THREE.BoxGeometry(0.035, 0.22, 0.018), rugged ? leather : linen,
+        [side * 0.06, 0.42, 0.148]);
+      lapel.rotation.z = side * 0.22;
+      if (appearance.clothing === 'jacket') {
+        part(torso, new THREE.BoxGeometry(0.11, 0.095, 0.025), outer, [side * 0.14 * shape, 0.15, 0.14]);
+      }
     }
-  } else if (appearance.clothing === 'jacket') {
-    part(torso, new THREE.BoxGeometry(0.13, 0.12, 0.035), leather, [0.18 * shape, 0.25, 0.19]);
+  }
+  sculpt(torso, leather, [[0, 0.23 * shape, 0.143], [0.07, 0.23 * shape, 0.143]], [0, -0.005, 0], 'belt');
+  part(torso, new THREE.BoxGeometry(0.055, 0.05, 0.018), metal, [0, 0.03, 0.15]);
+  const strap = part(torso, new THREE.BoxGeometry(0.035, 0.57, 0.014), darkLeather, [0.035, 0.32, 0.155]);
+  strap.rotation.z = -0.40;
+  sculpt(torso, leather, [[0, 0.055, 0.035], [0.11, 0.06, 0.04]], [0.20 * shape, -0.08, 0.12], 'pouch', 8);
+  if (rugged) {
+    clothPanel(torso, outer, 0.25 * shape, appearance.clothing === 'fur' ? 0.52 : 0.31);
+    if (appearance.clothing === 'fur') {
+      const mantle = sculpt(torso, fur, [[0, 0.27 * shape, 0.13], [0.075, 0.30 * shape, 0.13], [0.12, 0.16, 0.08]], [0, 0.49, -0.015]);
+      mantle.rotation.x = -0.08;
+    }
   }
 
   const head = new THREE.Group();
   head.name = 'head';
-  head.position.y = 1.77;
-  head.scale.setScalar(0.85);
+  head.position.y = 1.71;
   root.add(head);
-  part(head, new THREE.CylinderGeometry(0.09, 0.105, 0.18, 8), skin, [0, -0.22, 0]);
-  part(head, taperedFace(appearance.face === 'angular'), skin, [0, 0, 0], 'face');
+  sculpt(head, skin, [[-0.19, 0.07, 0.065], [-0.10, 0.075, 0.07]], [0, 0, 0], 'neck');
+  part(head, faceGeometry(appearance.face === 'angular', appearance.body === 'feminine'), skin, [0, 0, 0], 'face');
   for (const side of [-1, 1]) {
-    ellipsoid(head, skin, [side * 0.17, -0.01, 0], [0.033, 0.057, 0.026]);
-    ellipsoid(head, eyes, [side * 0.073, 0.025, 0.148], [0.023, 0.012, 0.014], side < 0 ? 'eyeL' : 'eyeR');
-    const brow = part(head, new THREE.BoxGeometry(0.06, 0.012, 0.014), hair, [side * 0.073, 0.058, 0.147]);
-    brow.rotation.z = side * -0.1;
+    const ear = part(head, new THREE.SphereGeometry(1, 8, 6), skin, [side * 0.13, -0.005, 0]);
+    ear.scale.set(0.023, 0.039, 0.018);
+    const white = part(head, new THREE.SphereGeometry(1, 8, 6), eyeWhite, [side * 0.054, 0.015, 0.105], side < 0 ? 'eyeWhiteL' : 'eyeWhiteR');
+    white.scale.set(0.016, 0.006, 0.004);
+    const eye = part(head, new THREE.SphereGeometry(1, 8, 6), eyes, [side * 0.054, 0.015, 0.112], side < 0 ? 'eyeL' : 'eyeR');
+    eye.scale.set(0.006, 0.006, 0.003);
+    const brow = part(head, new THREE.BoxGeometry(0.045, 0.008, 0.009), hair, [side * 0.054, 0.045, 0.11]);
+    brow.rotation.z = side * -0.11;
   }
-  const nose = part(head, new THREE.ConeGeometry(0.036, 0.09, 5), skin, [0, -0.035, 0.165]);
-  nose.rotation.x = Math.PI / 2;
-  part(head, new THREE.BoxGeometry(0.065, 0.009, 0.01), darkLeather, [0, -0.11, 0.148]);
+  part(head, new THREE.BoxGeometry(0.046, 0.006, 0.008), darkLeather, [0, -0.085, 0.109]);
   if (appearance.hair !== 'shaved') {
-    const scalp = part(head, new THREE.SphereGeometry(1, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.58), hair, [0, 0.045, -0.012]);
-    scalp.scale.set(0.18, 0.18, 0.17);
+    const scalp = part(head, new THREE.SphereGeometry(1, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.57), hair, [0, 0.035, -0.006], 'hair');
+    scalp.scale.set(0.137, 0.135, 0.13);
     if (appearance.hair === 'long' || appearance.hair === 'braided') {
-      ellipsoid(head, hair, [0, -0.10, -0.14], [0.16, 0.25, 0.09]);
+      sculpt(head, hair, [[-0.19, 0.10, 0.045], [-0.06, 0.14, 0.06], [0.10, 0.13, 0.06]], [0, 0, -0.105], 'long-hair');
       if (appearance.hair === 'braided') {
-        braid(head, hair, -0.14, 0.03, 0.08, 5);
-        braid(head, hair, 0.14, 0.03, 0.08, 5);
+        braid(head, hair, -0.115, 0.045, 5);
+        braid(head, hair, 0.115, 0.045, 5);
       }
     } else if (appearance.hair === 'curly') {
       for (let i = 0; i < 7; i++) {
         const angle = i * Math.PI * 2 / 7;
-        ellipsoid(head, hair, [Math.sin(angle) * 0.13, 0.18, Math.cos(angle) * 0.11], [0.065, 0.065, 0.065]);
+        const curl = part(head, new THREE.IcosahedronGeometry(0.038, 1), hair, [Math.sin(angle) * 0.10, 0.145, Math.cos(angle) * 0.085]);
+        curl.scale.y = 0.8;
       }
     }
   }
   if (appearance.facialHair !== 'none') {
     if (appearance.facialHair !== 'moustache') {
-      ellipsoid(head, hair, [0, -0.135, 0.105], [0.13, 0.12, 0.08]);
-      if (appearance.facialHair === 'braided') braid(head, hair, 0, -0.19, 0.15, 3);
+      sculpt(head, hair, [[-0.15, 0.055, 0.035], [-0.09, 0.105, 0.05], [-0.03, 0.105, 0.025]], [0, 0, 0.07], 'beard');
+      if (appearance.facialHair === 'braided') braid(head, hair, 0, 0.11, 3);
     }
     for (const side of [-1, 1]) {
-      const moustache = ellipsoid(head, hair, [side * 0.045, -0.075, 0.158], [0.055, 0.018, 0.018]);
-      moustache.rotation.z = side * -0.22;
+      const moustache = part(head, new THREE.CapsuleGeometry(0.012, 0.038, 3, 6), hair, [side * 0.026, -0.061, 0.115]);
+      moustache.rotation.z = side * -1.2;
     }
   }
   if (appearance.hat === 'cap' || appearance.hat === 'beanie') {
-    const hat = part(head, new THREE.SphereGeometry(1, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.54), outer, [0, 0.10, 0]);
-    hat.scale.set(0.19, 0.16, 0.18);
-    if (appearance.hat === 'cap') {
-      const brim = part(head, new THREE.BoxGeometry(0.25, 0.025, 0.14), leather, [0, 0.10, 0.17]);
-      brim.rotation.x = -0.08;
-    } else {
-      part(head, new THREE.TorusGeometry(0.18, 0.022, 5, 12), linen, [0, 0.10, 0]).rotation.x = Math.PI / 2;
-    }
+    const hat = part(head, new THREE.SphereGeometry(1, 16, 8, 0, Math.PI * 2, 0, Math.PI * 0.54), outer, [0, 0.075, 0]);
+    hat.scale.set(0.15, 0.12, 0.14);
+    if (appearance.hat === 'cap') part(head, new THREE.BoxGeometry(0.19, 0.015, 0.105), leather, [0, 0.075, 0.13]);
+    else part(head, new THREE.TorusGeometry(0.145, 0.012, 5, 16), linen, [0, 0.075, 0]).rotation.x = Math.PI / 2;
   } else if (appearance.hat === 'hood') {
-    const hood = part(head, new THREE.SphereGeometry(1, 12, 8), outer, [0, 0.04, -0.085]);
-    hood.scale.set(0.225, 0.27, 0.15);
+    const hood = part(head, new THREE.SphereGeometry(1, 12, 8), outer, [0, 0.025, -0.07], 'hood');
+    hood.scale.set(0.165, 0.20, 0.095);
   } else if (appearance.hat === 'helmet') {
-    const helmet = part(head, new THREE.SphereGeometry(1, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.55), metal, [0, 0.085, -0.01]);
-    helmet.scale.set(0.205, 0.20, 0.19);
-    part(head, new THREE.BoxGeometry(0.035, 0.16, 0.025), metal, [0, 0.015, 0.17]);
+    const helmet = part(head, new THREE.SphereGeometry(1, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55), metal, [0, 0.075, -0.01]);
+    helmet.scale.set(0.155, 0.14, 0.145);
+    part(head, new THREE.BoxGeometry(0.025, 0.13, 0.015), metal, [0, 0.01, 0.13]);
   }
 
   for (const side of [-1, 1]) {
     const leg = new THREE.Group();
     leg.name = side < 0 ? 'legL' : 'legR';
-    leg.position.set(side * 0.17 * shape, 0.87, 0);
+    leg.position.set(side * 0.125 * shape, 0.90, 0);
     root.add(leg);
-    const thigh = ellipsoid(leg, trousers, [0, -0.21, 0], [0.105, 0.25, 0.11]);
-    thigh.rotation.x = 0.04;
+    sculpt(leg, trousers, [[-0.42, 0.067, 0.075], [-0.30, 0.085, 0.085], [-0.13, 0.095, 0.10], [0.02, 0.105, 0.105]], [0, 0, 0], 'thigh');
     const knee = new THREE.Group();
     knee.name = side < 0 ? 'kneeL' : 'kneeR';
-    knee.position.y = -0.42;
+    knee.position.y = -0.40;
     leg.add(knee);
-    ellipsoid(knee, trousers, [0, -0.14, 0], [0.085, 0.21, 0.09]);
-    ellipsoid(knee, leather, [0, -0.28, 0], [0.095, 0.12, 0.10]);
-    const foot = ellipsoid(knee, darkLeather, [0, -0.37, 0.055], [0.10, 0.075, 0.18]);
-    foot.rotation.x = -0.04;
-    part(knee, new THREE.BoxGeometry(0.17, 0.025, 0.28), darkLeather, [0, -0.435, 0.05]);
+    sculpt(knee, trousers, [[-0.29, 0.055, 0.06], [-0.17, 0.07, 0.07], [-0.04, 0.075, 0.075], [0.03, 0.067, 0.075]], [0, 0, 0], 'calf');
+    sculpt(knee, leather, [[-0.38, 0.065, 0.075], [-0.23, 0.068, 0.065], [-0.16, 0.072, 0.07]], [0, 0, 0], 'boot');
+    sculpt(knee, darkLeather, [[-0.47, 0.075, 0.13, 0.055], [-0.40, 0.075, 0.13, 0.055], [-0.36, 0.062, 0.075, 0.02]], [0, 0, 0], 'foot', 8);
 
     const arm = new THREE.Group();
     arm.name = side < 0 ? 'armL' : 'armR';
-    arm.position.set(side * 0.34 * shape, 1.43, 0);
-    arm.rotation.z = side * 0.07;
+    arm.position.set(side * 0.275 * shape, 1.47, 0);
+    arm.rotation.z = side * 0.12;
     root.add(arm);
-    const sleeve = ellipsoid(arm, appearance.clothing === 'shirt' ? linen : outer, [side * 0.025, -0.16, 0], [0.095, 0.22, 0.10]);
-    sleeve.rotation.z = side * 0.08;
+    sculpt(arm, jacket ? outer : linen, [[-0.32, 0.057, 0.065], [-0.22, 0.065, 0.07], [-0.06, 0.08, 0.085], [0.03, 0.075, 0.075]], [0, 0, 0], 'sleeve');
     const elbow = new THREE.Group();
     elbow.name = side < 0 ? 'elbowL' : 'elbowR';
-    elbow.position.set(side * 0.035, -0.34, 0);
+    elbow.position.y = -0.31;
     arm.add(elbow);
-    ellipsoid(elbow, rugged ? leather : linen, [0, -0.12, 0], [0.09, 0.16, 0.09]);
-    ellipsoid(elbow, skin, [0, -0.27, 0.01], [0.07, 0.09, 0.05]);
+    sculpt(elbow, rugged ? leather : jacket ? outer : linen,
+      [[-0.23, 0.048, 0.05], [-0.15, 0.055, 0.06], [-0.02, 0.062, 0.065], [0.025, 0.058, 0.065]], [0, 0, 0], 'forearm');
+    hand(elbow, skin, side, fingerGeometry);
     if (side > 0) {
       heldTool(elbow, 'chop', leather, metal);
       heldTool(elbow, 'mine', leather, metal);
@@ -230,10 +296,11 @@ export function createCharacter(input: Outfit | CharacterAppearance = 'ember') {
 }
 
 export function disposeCharacter(model: THREE.Object3D) {
+  disposeAuthoredCharacter(model);
   const geometries = new Set<THREE.BufferGeometry>();
   const materials = new Set<THREE.Material>();
   model.traverse(object => {
-    if (!(object instanceof THREE.Mesh)) return;
+    if (!(object instanceof THREE.Mesh) || object.userData.authoredShared) return;
     geometries.add(object.geometry);
     (Array.isArray(object.material) ? object.material : [object.material]).forEach(surface => materials.add(surface));
   });

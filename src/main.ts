@@ -13,18 +13,21 @@ import { CharacterPreview } from './character-preview';
 import { createWildlife, updateWildlife, type AnimalState } from './wildlife';
 import { animateAnimal, createAnimal, disposeAnimal } from './animal-assets';
 import { disposeCharacter } from './characters';
+import { attachAuthoredCharacter, updateAuthoredCharacter } from './authored-character';
 import { chooseEnemyKind, enemyIntent, enemyProfiles, stepEnemyProjectile, type EnemyKind } from './enemies';
 import { enterImmersiveMode, setupPwa, UPDATE_RESUME_KEY } from './pwa';
 import { nearestPlanetPosition, planetCoordinates, PLANET_HEIGHT, PLANET_WIDTH } from './planet';
 import { addPiece, enclosedCells, FLOOR_HEIGHT, floorSurface, isEdgePiece, pieceBlocks, pieceCosts, pieceProblem, removePiece, snapPiece, type PieceKind, type PieceRotation, type StructuralPiece } from './construction';
 import { ConstructionRenderer, createPieceGhost } from './construction-render';
+import { emptyMinerals } from './economy';
+import { advanceSmelting, startSmelting, type SmeltableOre, type SmeltingJob } from './smelting';
 import {
   createCharacter, createShelter, createStorage, createLamp, createGenerator,
-  createWindTurbine, createVehicle, createEnemy, createBattery, createCable, type Outfit,
+  createWindTurbine, createVehicle, createEnemy, createBattery, createCable, createSmelter, type Outfit,
 } from './assets';
 
 type Resources = Inventory;
-type BuildingRecord = PowerNode & { y: number; rotation: number };
+type BuildingRecord = PowerNode & { y: number; rotation: number; smelting?: SmeltingJob };
 type BuildKind = BuildingKind | PieceKind;
 
 function isPieceKind(kind: BuildKind): kind is PieceKind {
@@ -61,7 +64,7 @@ app.innerHTML = `
           <canvas id="characterPreview" aria-label="3D character preview. Drag to rotate."></canvas>
           <div class="preview-controls"><button id="previewLeft" type="button" aria-label="Rotate character left">←</button><span>DRAG TO ROTATE</span><button id="previewRight" type="button" aria-label="Rotate character right">→</button></div>
         </div>
-        <div class="character-options"><h3>APPEARANCE</h3><div id="appearanceFields"></div><button id="finishCharacter" class="primary" type="button">DONE</button></div>
+        <div class="character-options"><h3>APPEARANCE</h3><p class="appearance-notice">Some choices are approximated; modern clothes, caps and helmets are not yet available.</p><div id="appearanceFields"></div><button id="finishCharacter" class="primary" type="button">DONE</button></div>
       </div>
     </div>
   </div>
@@ -88,7 +91,8 @@ app.innerHTML = `
     <small class="placement-hint">Point at ground · Click to place · Right-drag to orbit</small>
   </div>
   <div id="npcPanel" class="panel hidden"><h2>MIRA · SURVIVOR</h2><p id="npcStatus">A friendly survivor.</p><button id="npcRecruit" class="primary">RECRUIT</button><button data-job="wood" class="secondary">GATHER WOOD</button><button data-job="stone" class="secondary">GATHER STONE</button><button data-job="idle" class="secondary">REST</button><button id="closeNpc" class="close" aria-label="Close survivor menu">×</button></div>
-  <div id="craftPanel" class="panel hidden"><h2>CRAFTING</h2><p>Tools increase the yield from each resource.</p><button data-craft="axe" class="secondary">AXE · 3 WOOD, 2 STONE</button><button data-craft="pickaxe" class="secondary">PICKAXE · 2 WOOD, 3 STONE</button><p id="toolStatus"></p><button id="closeCraft" class="close" aria-label="Close crafting">×</button></div>
+  <div id="craftPanel" class="panel hidden"><h2>CRAFTING</h2><p>Craft a pickaxe to mine ore, coal and limestone. Clay and sand can be gathered by hand.</p><button data-craft="axe" class="secondary">AXE · 3 WOOD, 2 STONE</button><button data-craft="pickaxe" class="secondary">PICKAXE · 2 WOOD, 3 STONE</button><p id="toolStatus"></p><p id="mineralInventory"></p><button id="closeCraft" class="close" aria-label="Close crafting">×</button></div>
+  <div id="smelterPanel" class="panel hidden"><h2>SMELTER</h2><p id="smelterStatus"></p><button data-smelt="ironOre" class="secondary">IRON INGOT · 2 IRON ORE + 1 COAL</button><button data-smelt="copperOre" class="secondary">COPPER INGOT · 2 COPPER ORE + 1 COAL</button><button id="forgePickaxe" class="secondary">IRON PICKAXE · 2 IRON + 2 WOOD</button><p>Close this panel to let production run. The iron pickaxe doubles mineral yield.</p><button id="closeSmelter" class="close" aria-label="Close smelter">×</button></div>
   <div id="pausePanel" class="panel hidden"><h2>PAUSED</h2>
     <label class="setting">Auto follow <input id="cameraFollow" type="checkbox" checked></label>
     <label class="setting">Camera distance <input id="cameraDistance" type="range" min="5" max="24" step="1" value="12"></label>
@@ -146,11 +150,23 @@ let outfit: Outfit = 'ember';
 let appearance: CharacterAppearance = { ...defaultAppearance(outfit), clothing: 'tunic' };
 let characterName = 'Survivor';
 let npcAppearanceSeed = ((seed >>> 0) + 53917) >>> 0;
+let characterLoadErrorShown = false;
+function useAuthoredCharacter(character: THREE.Group, look: CharacterAppearance) {
+  attachAuthoredCharacter(character, look, error => {
+    console.error('Could not load authored character; using procedural fallback', error);
+    if (!characterLoadErrorShown) {
+      characterLoadErrorShown = true;
+      toast('Character assets could not be loaded; using fallback');
+    }
+  });
+}
 let player = createCharacter(appearance);
+useAuthoredCharacter(player, appearance);
 player.position.set(0, world.heightAt(0, 0), 5);
 scene.add(player);
 
 let npc = createCharacter(appearanceFromSeed(npcAppearanceSeed));
+useAuthoredCharacter(npc, appearanceFromSeed(npcAppearanceSeed));
 npc.position.set(-4, world.heightAt(-4, 2), 2);
 scene.add(npc);
 
@@ -159,6 +175,10 @@ vehicle.position.set(8, world.heightAt(8, 4), 4);
 scene.add(vehicle);
 
 const resources: Resources = { wood: 0, stone: 0, food: 3, water: 3 };
+const mineralInventory = emptyMinerals();
+const ingots = { iron: 0, copper: 0 };
+let ironPickaxe = false;
+let activeSmelter: BuildingRecord | null = null;
 const tools: Tool[] = [];
 const buildings: THREE.Group[] = [];
 const buildingRecords: BuildingRecord[] = [];
@@ -273,6 +293,7 @@ addEventListener('keydown', event => {
     if (!document.querySelector('#pausePanel')!.classList.contains('hidden')) togglePause();
     else if (!document.querySelector('#buildPanel')!.classList.contains('hidden') || buildMode) cancelBuild();
     else if (!document.querySelector('#craftPanel')!.classList.contains('hidden')) document.querySelector('#craftPanel')!.classList.add('hidden');
+    else if (!document.querySelector('#smelterPanel')!.classList.contains('hidden')) document.querySelector('#smelterPanel')!.classList.add('hidden');
     else if (!document.querySelector('#npcPanel')!.classList.contains('hidden')) document.querySelector('#npcPanel')!.classList.add('hidden');
     else togglePause();
     return;
@@ -530,7 +551,8 @@ document.querySelector('#saveGame')!.addEventListener('click', () => saveGame(tr
 document.querySelector('#returnMenu')!.addEventListener('click', () => location.reload());
 document.querySelector('#closeBuild')!.addEventListener('click', cancelBuild);
 document.querySelector('#inventoryButton')!.addEventListener('click', () => {
-  if (paused || driving || buildMode || !document.querySelector('#npcPanel')!.classList.contains('hidden')) return;
+  if (paused || driving || buildMode || !document.querySelector('#npcPanel')!.classList.contains('hidden')
+    || !document.querySelector('#smelterPanel')!.classList.contains('hidden')) return;
   document.querySelector('#toolStatus')!.textContent = `Tools: ${tools.join(', ') || 'none'}`;
   document.querySelector('#craftPanel')!.classList.toggle('hidden');
   clearMovement();
@@ -544,6 +566,36 @@ document.querySelectorAll<HTMLButtonElement>('[data-craft]').forEach(button => b
   document.querySelector('#toolStatus')!.textContent = `Tools: ${tools.join(', ')}`;
   toast(`${tool} crafted`);
 }));
+function refreshSmelter() {
+  const job = activeSmelter?.smelting;
+  document.querySelector('#smelterStatus')!.textContent = job
+    ? `Processing ${job.ore}: ${Math.ceil(job.remaining)} seconds remaining.`
+    : `Ready. Iron: ${ingots.iron} · Copper: ${ingots.copper}`;
+}
+document.querySelector('#closeSmelter')!.addEventListener('click', () => document.querySelector('#smelterPanel')!.classList.add('hidden'));
+document.querySelectorAll<HTMLButtonElement>('[data-smelt]').forEach(button => button.addEventListener('click', () => {
+  if (!activeSmelter) return;
+  if (activeSmelter.smelting) { toast('Smelter is busy'); return; }
+  const job = startSmelting(mineralInventory, activeSmelter.smelting, button.dataset.smelt as SmeltableOre);
+  if (!job) { toast('Need 2 ore and 1 coal'); return; }
+  activeSmelter.smelting = job;
+  updateResources();
+  refreshSmelter();
+  toast('Smelting started');
+  void saveGame(false);
+}));
+document.querySelector('#forgePickaxe')!.addEventListener('click', () => {
+  if (ironPickaxe) { toast('Iron pickaxe already forged'); return; }
+  if (!tools.includes('pickaxe')) { toast('Craft a basic pickaxe first'); return; }
+  if (ingots.iron < 2 || resources.wood < 2) { toast('Need 2 iron ingots and 2 wood'); return; }
+  ingots.iron -= 2;
+  resources.wood -= 2;
+  ironPickaxe = true;
+  updateResources();
+  refreshSmelter();
+  toast('Iron pickaxe forged');
+  void saveGame(false);
+});
 document.querySelector('#npcRecruit')!.addEventListener('click', () => {
   npcState.recruited = true;
   toast('Mira joined your settlement');
@@ -579,6 +631,7 @@ const catalog: Array<{ kind: BuildKind; name: string; cost: Partial<Resources>; 
   { kind: 'turbine', name: 'Wind Turbine', cost: buildingCosts.turbine, icon: '✣' },
   { kind: 'battery', name: 'Battery', cost: buildingCosts.battery, icon: '▰' },
   { kind: 'cable', name: 'Cable post', cost: buildingCosts.cable, icon: '⌁' },
+  { kind: 'smelter', name: 'Smelter', cost: buildingCosts.smelter, icon: '♨' },
 ];
 const buildCatalog = document.querySelector('#buildCatalog')!;
 catalog.forEach(item => {
@@ -599,6 +652,7 @@ function resetWorld() {
   disposeCharacter(player);
   disposeCharacter(npc);
   npc = createCharacter(appearanceFromSeed(npcAppearanceSeed));
+  useAuthoredCharacter(npc, appearanceFromSeed(npcAppearanceSeed));
   scene.add(npc);
   for (const building of buildings) scene.remove(building);
   buildings.length = 0;
@@ -615,6 +669,11 @@ function resetWorld() {
   spawnCooldown = 0;
   enemyHitCooldown = 0;
   Object.assign(resources, { wood: 0, stone: 0, food: 3, water: 3 });
+  Object.assign(mineralInventory, emptyMinerals());
+  Object.assign(ingots, { iron: 0, copper: 0 });
+  ironPickaxe = false;
+  activeSmelter = null;
+  document.querySelector('#smelterPanel')!.classList.add('hidden');
   tools.length = 0;
   Object.assign(npcState, { recruited: false, job: 'idle', carrying: null });
   health = 100;
@@ -623,6 +682,7 @@ function resetWorld() {
   npc.position.set(spawn.x - 4, world.heightAt(spawn.x - 4, spawn.z - 3), spawn.z - 3);
   vehicle.position.set(spawn.x + 8, world.heightAt(spawn.x + 8, spawn.z - 1), spawn.z - 1);
   player = createCharacter(appearance);
+  useAuthoredCharacter(player, appearance);
   player.position.set(spawn.x, world.heightAt(spawn.x, spawn.z), spawn.z);
   player.rotation.y = Math.PI + cameraAngle;
   scene.add(player);
@@ -656,6 +716,7 @@ function togglePause() {
   if (paused) {
     document.querySelector('#npcPanel')!.classList.add('hidden');
     document.querySelector('#craftPanel')!.classList.add('hidden');
+    document.querySelector('#smelterPanel')!.classList.add('hidden');
   }
   clearMovement();
   document.querySelector('#pausePanel')!.classList.toggle('hidden', !paused);
@@ -673,6 +734,7 @@ function clearMovement() {
 function gameplayBlocked() {
   return paused || updatePending || !document.querySelector('#buildPanel')!.classList.contains('hidden')
     || !document.querySelector('#craftPanel')!.classList.contains('hidden')
+    || !document.querySelector('#smelterPanel')!.classList.contains('hidden')
     || !document.querySelector('#npcPanel')!.classList.contains('hidden')
     || !document.querySelector('#updatePanel')!.classList.contains('hidden');
 }
@@ -888,7 +950,7 @@ function placementIssue() {
     if (pieceBlocks(piece, player.position.x, player.position.y, player.position.z)
       || pieceBlocks(piece, npc.position.x, npc.position.y, npc.position.z)) return 'Move away from the character';
     if (Math.hypot(piece.x - vehicle.position.x, piece.z - vehicle.position.z) < 1.5 && Math.abs(piece.y - vehicle.position.y) < 2) return 'Move away from the rover';
-    if (world.findNearest(piece.x, piece.z, 1)) return 'Clear nearby resources';
+    if (world.findNearest(piece.x, piece.z, 1) || world.findNearestDeposit(piece.x, piece.z, 1)) return 'Clear nearby resources';
     return pieceProblem(piece, structures, resources);
   }
   const problem = placementProblem(buildTarget, buildKind, buildTarget.y, buildingRecords, player.position);
@@ -897,7 +959,7 @@ function placementIssue() {
   if (structures.some(piece => Math.hypot(piece.x - buildTarget.x, piece.z - buildTarget.z) < footprint + 1)) return 'Too close to another building';
   if (Math.hypot(buildTarget.x - npc.position.x, buildTarget.z - npc.position.z) < footprint + 0.6) return 'Move away from Mira';
   if (Math.hypot(buildTarget.x - vehicle.position.x, buildTarget.z - vehicle.position.z) < footprint + 1.2) return 'Move away from the rover';
-  if (world.findNearest(buildTarget.x, buildTarget.z, footprint + 0.45)) return 'Clear nearby resources';
+  if (world.findNearest(buildTarget.x, buildTarget.z, footprint + 0.45) || world.findNearestDeposit(buildTarget.x, buildTarget.z, footprint + 0.45)) return 'Clear nearby resources';
   const radius = footprint * 0.7;
   const heights = [[radius, 0], [-radius, 0], [0, radius], [0, -radius]]
     .map(([x, z]) => world.heightAt(buildTarget.x + x, buildTarget.z + z));
@@ -927,6 +989,7 @@ function createBuilding(kind: BuildingKind) {
   if (kind === 'turbine') return createWindTurbine();
   if (kind === 'battery') return createBattery();
   if (kind === 'cable') return createCable();
+  if (kind === 'smelter') return createSmelter();
   return createShelter();
 }
 
@@ -1005,6 +1068,25 @@ function gather() {
     } else toast(`${animal.species} hit`);
     return;
   }
+  const deposit = world.findNearestDeposit(player.position.x, player.position.z, 3.2);
+  const natural = world.findNearest(player.position.x, player.position.z, 3.2);
+  if (deposit && (!natural || deposit.position.distanceTo(player.position) < natural.position.distanceTo(player.position))) {
+    if (attackCooldown > 0) return;
+    const result = world.mineDeposit(deposit, tools.includes('pickaxe'));
+    if (!result) return;
+    if (result.needsPickaxe) { toast('Craft a pickaxe to mine this deposit'); return; }
+    attackCooldown = 0.6;
+    animationAction = 'mine';
+    animationActionTime = 0.6;
+    effects.burst(result.position, 'stone');
+    const amount = ironPickaxe ? 2 : 1;
+    if (result.mineral === 'stone') resources.stone += amount;
+    else mineralInventory[result.mineral] += amount;
+    toast(`+${amount} ${result.mineral} · ${result.progress}/3`);
+    updateResources();
+    void saveGame(false);
+    return;
+  }
   const found = world.gatherNearest(player.position.x, player.position.z, 3.2);
   if (!found) { toast('Move closer to a tree, rock, or berry bush'); return; }
   animationAction = found.resource === 'stone' ? 'mine' : 'chop';
@@ -1050,7 +1132,10 @@ function interact() {
     .map(piece => ({ piece, distance: Math.hypot(piece.x - player.position.x, piece.z - player.position.z) }))
     .filter(candidate => candidate.distance < 2.5)
     .sort((a, b) => a.distance - b.distance)[0];
-  if (door && door.distance <= Math.min(vehicle.position.distanceTo(player.position), npc.position.distanceTo(player.position))) {
+  const smelter = buildingRecords.filter(record => record.kind === 'smelter')
+    .map(record => ({ record, distance: Math.hypot(record.x - player.position.x, record.z - player.position.z) }))
+    .filter(candidate => candidate.distance < 3.2).sort((a, b) => a.distance - b.distance)[0];
+  if (door && door.distance <= Math.min(vehicle.position.distanceTo(player.position), npc.position.distanceTo(player.position), smelter?.distance ?? Infinity)) {
     if (door.piece.open && pieceBlocks({ ...door.piece, open: false }, player.position.x, player.position.y, player.position.z)) {
       toast('Step out of the doorway first');
       return;
@@ -1060,7 +1145,12 @@ function interact() {
     void saveGame(false);
     return;
   }
-  if (vehicle.position.distanceTo(player.position) < 3.2) {
+  if (smelter && smelter.distance <= Math.min(vehicle.position.distanceTo(player.position), npc.position.distanceTo(player.position))) {
+    activeSmelter = smelter.record;
+    refreshSmelter();
+    clearMovement();
+    document.querySelector('#smelterPanel')!.classList.remove('hidden');
+  } else if (vehicle.position.distanceTo(player.position) < 3.2) {
     scene.remove(player);
     driving = true;
     vehicleSpeed = 0;
@@ -1087,6 +1177,7 @@ function updateResources() {
   document.querySelector('#resources')!.innerHTML =
     `<div><b>🌲</b><span>${resources.wood}</span></div><div><b>◆</b><span>${resources.stone}</span></div><div><b>◒</b><span>${resources.food}</span></div><div><b>💧</b><span>${resources.water}</span></div>`;
   (document.querySelector('#healthBar') as HTMLElement).style.width = `${health}%`;
+  document.querySelector('#mineralInventory')!.textContent = `Minerals: clay ${mineralInventory.clay} · sand ${mineralInventory.sand} · coal ${mineralInventory.coal} · copper ore ${mineralInventory.copperOre} · iron ore ${mineralInventory.ironOre} · limestone ${mineralInventory.limestone} · iron ingots ${ingots.iron} · copper ingots ${ingots.copper}${ironPickaxe ? ' · iron pickaxe' : ''}`;
 }
 
 function toast(message: string) {
@@ -1236,6 +1327,14 @@ function rebaseWorld() {
 
 function updateGame(dt: number) {
   effects.update(dt);
+  for (const building of buildingRecords) {
+    if (building.smelting && advanceSmelting(building.smelting, ingots, dt)) {
+      delete building.smelting;
+      updateResources();
+      toast('Smelting complete');
+      void saveGame(false);
+    }
+  }
   attackCooldown = Math.max(0, attackCooldown - dt);
   enemyHitCooldown = Math.max(0, enemyHitCooldown - dt);
   spawnCooldown = Math.max(0, spawnCooldown - dt);
@@ -1350,6 +1449,10 @@ function updateGame(dt: number) {
       const light = building.userData.light as THREE.PointLight;
       light.intensity = buildingRecords[index].powered ? 8 : 0;
     }
+    if (buildingRecords[index]?.kind === 'smelter') {
+      const embers = building.userData.embers as THREE.Mesh;
+      embers.visible = Boolean(buildingRecords[index].smelting);
+    }
   });
 
   if (isNight(gameMinutes) && enemies.length < 2 && spawnCooldown === 0) {
@@ -1359,6 +1462,7 @@ function updateGame(dt: number) {
     if (world.heightAt(x, z) > 0.2 && buildingRecords.every(b => Math.hypot(x - b.x, z - b.z) > 4)) {
       const kind = chooseEnemyKind(day, seededNoise(x, z, seed + day));
       const enemy = createEnemy(kind);
+      if (kind === 'raider') useAuthoredCharacter(enemy, { ...defaultAppearance('sage'), hair: 'shaved', clothing: 'fur', hat: 'hood' });
       enemy.position.set(x, world.heightAt(x, z), z);
       enemy.userData.health = enemyProfiles[kind].health;
       enemy.userData.attackTimer = 0;
@@ -1565,6 +1669,7 @@ function updateNpc(dt: number) {
 }
 
 function animateCharacter(character: THREE.Group, dt: number, movement: number, running = false, action?: typeof animationAction, carrying = false, actionTime = animationActionTime) {
+  if (updateAuthoredCharacter(character, dt, movement, running, action, carrying)) return;
   const time = performance.now() * (running ? 0.011 : 0.007);
   const legL = character.getObjectByName('legL');
   const legR = character.getObjectByName('legR');
@@ -1724,7 +1829,7 @@ async function saveGame(notify: boolean) {
     const db = await openDatabase();
     const tx = db.transaction('saves', 'readwrite');
     tx.objectStore('saves').put({
-      version: 7,
+      version: 8,
       seed,
       outfit,
       appearance: { ...appearance },
@@ -1739,6 +1844,10 @@ async function saveGame(notify: boolean) {
       autoRoof,
       terrain: world.snapshot(),
       depleted: world.depletedSnapshot(),
+      minerals: { ...mineralInventory },
+      mining: world.miningSnapshot(),
+      ingots: { ...ingots },
+      ironPickaxe,
       npcState: { ...npcState },
       health,
       tools: [...tools],
@@ -1791,6 +1900,19 @@ async function loadGame() {
         });
         backupDb.close();
       }
+      if (saved.version < 8) {
+        const backupDb = await openDatabase();
+        const backupTx = backupDb.transaction('saves', 'readwrite');
+        const store = backupTx.objectStore('saves');
+        const existing = store.get('pre-economy-backup');
+        existing.onsuccess = () => { if (!existing.result) store.put(saved, 'pre-economy-backup'); };
+        await new Promise<void>((resolve, reject) => {
+          backupTx.oncomplete = () => resolve();
+          backupTx.onerror = () => reject(backupTx.error);
+          backupTx.onabort = () => reject(backupTx.error ?? new Error('Economy backup transaction aborted'));
+        });
+        backupDb.close();
+      }
       const save = saved;
       seed = save.seed;
       outfit = save.outfit;
@@ -1800,12 +1922,16 @@ async function loadGame() {
       resetWorld();
       if (save.wildlife) resetWildlife(save.wildlife);
       Object.assign(resources, save.resources);
+      Object.assign(mineralInventory, save.version === 8 ? save.minerals : emptyMinerals());
+      Object.assign(ingots, save.version === 8 ? save.ingots : { iron: 0, copper: 0 });
+      ironPickaxe = save.version === 8 && Boolean(save.ironPickaxe);
       if (save.npcState) Object.assign(npcState, save.npcState);
       health = save.health ?? 100;
       tools.push(...(save.tools ?? []));
       world.updateChunks(save.player.x, save.player.z, true);
       world.restore(save.terrain);
       world.restoreDepleted(save.depleted ?? []);
+      world.restoreMining(save.version === 8 ? (save.mining ?? {}) : {});
       player.position.set(save.player.x, world.heightAt(save.player.x, save.player.z), save.player.z);
       npc.position.set(save.npc.x, world.heightAt(save.npc.x, save.npc.z), save.npc.z);
       vehicle.position.set(save.vehicle.x, world.heightAt(save.vehicle.x, save.vehicle.z), save.vehicle.z);
@@ -1822,6 +1948,10 @@ async function loadGame() {
         buildingRecords.push({ ...record, charge: record.charge ?? 0, powered: false });
       });
       structures.push(...(save.structures ?? []).map(piece => ({ ...piece })));
+      world.setDepositExclusions([
+        ...buildingRecords.map(record => ({ x: record.x, z: record.z, radius: buildingRadius(record.kind) + 0.45 })),
+        ...structures.map(piece => ({ x: piece.x, z: piece.z, radius: 1 })),
+      ]);
       autoRoof = save.autoRoof ?? true;
       (document.querySelector('#autoRoof') as HTMLInputElement).checked = autoRoof;
       constructionRenderer.refresh(structures);

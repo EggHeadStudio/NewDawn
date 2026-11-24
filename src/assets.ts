@@ -100,6 +100,33 @@ export function createGenerator() {
   return root;
 }
 
+export function createSmelter() {
+  const root = new THREE.Group();
+  const stone = mat('#767b70');
+  const dark = mat('#303b39');
+  const fire = new THREE.MeshStandardMaterial({ color: '#b66b3e', emissive: '#71311b', emissiveIntensity: 0.7, roughness: 1 });
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 1.05, 0.35, 8), stone);
+  base.position.y = 0.18;
+  root.add(base);
+  const furnace = new THREE.Mesh(new THREE.CylinderGeometry(0.64, 0.82, 1.35, 8), stone);
+  furnace.position.y = 1;
+  furnace.castShadow = true;
+  root.add(furnace);
+  const chimney = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.32, 0.7, 8), dark);
+  chimney.position.y = 2.03;
+  root.add(chimney);
+  const opening = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.5, 0.08), dark);
+  opening.position.set(0, 0.72, 0.75);
+  root.add(opening);
+  const embers = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.15, 0.09), fire);
+  embers.position.set(0, 0.58, 0.8);
+  embers.visible = false;
+  root.add(embers);
+  root.userData.embers = embers;
+  root.userData.building = 'smelter';
+  return root;
+}
+
 export function createBattery() {
   const root = new THREE.Group();
   const body = new THREE.Mesh(new THREE.BoxGeometry(1.05, 1.1, 0.8), mat('#3c6062'));

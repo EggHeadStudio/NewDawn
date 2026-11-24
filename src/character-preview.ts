@@ -1,12 +1,14 @@
 import * as THREE from 'three';
 import { createCharacter } from './assets';
 import type { CharacterAppearance } from './appearance';
+import { attachAuthoredCharacter, updateAuthoredCharacter } from './authored-character';
+import { disposeCharacter } from './characters';
 
 function disposeModel(model: THREE.Object3D) {
   const geometries = new Set<THREE.BufferGeometry>();
   const materials = new Set<THREE.Material>();
   model.traverse(object => {
-    if (!(object instanceof THREE.Mesh)) return;
+    if (!(object instanceof THREE.Mesh) || object.userData.authoredShared) return;
     geometries.add(object.geometry);
     for (const material of Array.isArray(object.material) ? object.material : [object.material]) materials.add(material);
   });
@@ -21,13 +23,14 @@ export class CharacterPreview {
   private model: THREE.Group | undefined;
   private angle = 0;
   private pointer: { id: number; x: number } | undefined;
+  private lastTime = 0;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.camera.position.set(0, 1.35, 5.2);
-    this.camera.lookAt(0, 1.1, 0);
+    this.camera.position.set(0, 1.3, 4.5);
+    this.camera.lookAt(0, 1.0, 0);
     this.scene.add(new THREE.HemisphereLight('#e9f4f2', '#47604c', 2));
     const light = new THREE.DirectionalLight('#fff0ce', 2.4);
     light.position.set(3, 5, 4);
@@ -51,9 +54,12 @@ export class CharacterPreview {
   setAppearance(appearance: CharacterAppearance) {
     if (this.model) {
       this.scene.remove(this.model);
-      disposeModel(this.model);
+      disposeCharacter(this.model);
     }
     this.model = createCharacter(appearance);
+    attachAuthoredCharacter(this.model, appearance, error => {
+      console.error('Could not load authored character preview', error);
+    });
     this.scene.add(this.model);
   }
 
@@ -70,13 +76,21 @@ export class CharacterPreview {
     }
     if (this.model) {
       this.model.rotation.y = this.angle;
-      const torso = this.model.getObjectByName('torso');
-      if (torso) torso.scale.y = 1 + Math.sin(time * 0.002) * 0.012;
+      const dt = this.lastTime ? Math.min((time - this.lastTime) / 1000, 0.1) : 0;
+      if (!updateAuthoredCharacter(this.model, dt, 0, false, undefined, false)) {
+        const torso = this.model.getObjectByName('torso');
+        if (torso) torso.scale.y = 1 + Math.sin(time * 0.002) * 0.012;
+      }
     }
+    this.lastTime = time;
     this.renderer.render(this.scene, this.camera);
   }
 
   dispose() {
+    if (this.model) {
+      this.scene.remove(this.model);
+      disposeCharacter(this.model);
+    }
     disposeModel(this.scene);
     this.renderer.dispose();
   }

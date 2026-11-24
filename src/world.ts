@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { CHUNK_SIZE, PLANET_HEIGHT, planetCoordinates, planetHeight } from './planet';
+import { CHUNK_SIZE, PLANET_HEIGHT, nearestPlanetPosition, planetCoordinates, planetHeight } from './planet';
+import { depositKinds, requiresPickaxe, type DepositKind } from './economy';
 
 export type Biome = 'ocean' | 'beach' | 'grass' | 'forest' | 'rock' | 'desert' | 'snow';
 type Season = 'Spring' | 'Summer' | 'Autumn' | 'Winter';
@@ -76,6 +77,8 @@ export class World {
   readonly seed: number;
   private terrainMod = new Map<string, number>();
   private depleted = new Set<string>();
+  private mining = new Map<string, number>();
+  private depositExclusions: Array<{ x: number; z: number; radius: number }> = [];
   private chunks = new Map<string, Chunk>();
   private fadedTrees = new Set<THREE.Object3D>();
   private season: Season = 'Spring';
@@ -194,9 +197,56 @@ export class World {
     const chunk: Chunk = { x: cx, z: cz, objects: [terrain, water], terrain, baseColors: new Float32Array(colors) };
     this.chunks.set(`${cx},${cz}`, chunk);
     this.addNature(chunk);
+    this.addDeposits(chunk);
     this.addGroundCover(chunk);
     chunk.objects.forEach(object => this.group.add(object));
     this.colorChunk(chunk);
+  }
+
+  private addDeposits(chunk: Chunk) {
+    const colors: Record<DepositKind, string> = {
+      stone: '#a8aaa0',
+      clay: '#ad735d', sand: '#d8bd79', coal: '#383d3b',
+      copperOre: '#b67a4d', ironOre: '#9b5b4b', limestone: '#c4c1a8',
+    };
+    for (let z = chunk.z * CHUNK_SIZE + 6; z < (chunk.z + 1) * CHUNK_SIZE; z += 12) {
+      for (let x = chunk.x * CHUNK_SIZE + 6; x < (chunk.x + 1) * CHUNK_SIZE; x += 12) {
+        const point = planetCoordinates(x, z);
+        const id = coordinateKey(x, z);
+        if ((this.mining.get(id) ?? 0) >= 3 || this.depositBlocked(x, z) || terrainHeight(x, z, this.seed) <= 0.45) continue;
+        const mineral = depositKinds[Math.floor(seededNoise(point.x, point.z, this.seed + 937) * depositKinds.length)];
+        const deposit = new THREE.Group();
+        deposit.position.set(x, this.heightAt(x, z), z);
+        deposit.userData.depositId = id;
+        deposit.userData.mineral = mineral;
+        const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.65, 0),
+          new THREE.MeshStandardMaterial({ color: '#727b74', roughness: 1 }));
+        rock.position.y = 0.38;
+        rock.scale.set(1.15, 0.7, 0.85);
+        rock.castShadow = true;
+        deposit.add(rock);
+        const vein = new THREE.Mesh(new THREE.IcosahedronGeometry(0.36, 0),
+          new THREE.MeshStandardMaterial({ color: colors[mineral], roughness: 0.85 }));
+        vein.position.set(0.12, 0.66, 0.06);
+        vein.scale.set(1, 0.55, 0.7);
+        deposit.add(vein);
+        chunk.objects.push(deposit);
+      }
+    }
+  }
+
+  private depositBlocked(x: number, z: number) {
+    return this.depositExclusions.some(exclusion => {
+      const position = nearestPlanetPosition(exclusion.x, exclusion.z, x, z);
+      return Math.hypot(position.x - x, position.z - z) < exclusion.radius;
+    });
+  }
+
+  setDepositExclusions(exclusions: Array<{ x: number; z: number; radius: number }>) {
+    this.depositExclusions = exclusions.map(exclusion => ({ ...exclusion }));
+    for (const object of [...this.group.children]) {
+      if (object.userData.depositId && this.depositBlocked(object.position.x, object.position.z)) this.removeResource(object);
+    }
   }
 
   private addNature(chunk: Chunk) {
@@ -291,6 +341,39 @@ export class World {
       if (d < distance) { distance = d; nearest = object; }
     }
     return nearest;
+  }
+
+  findNearestDeposit(x: number, z: number, range: number) {
+    let nearest: THREE.Object3D | undefined;
+    let distance = range;
+    for (const object of this.group.children) {
+      if (!object.userData.depositId) continue;
+      const d = Math.hypot(object.position.x - x, object.position.z - z);
+      if (d < distance) { distance = d; nearest = object; }
+    }
+    return nearest;
+  }
+
+  mineDeposit(deposit: THREE.Object3D, hasPickaxe: boolean) {
+    if (deposit.parent !== this.group || typeof deposit.userData.depositId !== 'string'
+      || !depositKinds.includes(deposit.userData.mineral as DepositKind)) return undefined;
+    const mineral = deposit.userData.mineral as DepositKind;
+    if (requiresPickaxe(mineral) && !hasPickaxe) return { mineral, needsPickaxe: true as const };
+    const id = deposit.userData.depositId as string;
+    const progress = (this.mining.get(id) ?? 0) + 1;
+    this.mining.set(id, progress);
+    const position = deposit.position.clone();
+    if (progress === 3) this.removeResource(deposit);
+    return { mineral, needsPickaxe: false as const, progress, position };
+  }
+
+  miningSnapshot() { return Object.fromEntries(this.mining); }
+
+  restoreMining(progress: Record<string, number>) {
+    this.mining = new Map(Object.entries(progress));
+    for (const object of [...this.group.children]) {
+      if (object.userData.depositId && (this.mining.get(object.userData.depositId as string) ?? 0) >= 3) this.removeResource(object);
+    }
   }
 
   gatherNearest(x: number, z: number, range: number, resource?: Resource) {

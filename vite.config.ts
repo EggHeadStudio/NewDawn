@@ -1,4 +1,6 @@
 import { defineConfig, type Plugin } from 'vite';
+import { readdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 const version = `0.1.0+${Date.now().toString(36)}`;
 
@@ -8,7 +10,10 @@ function offlineShell(): Plugin {
     enforce: 'post',
     generateBundle(_options, bundle) {
       const assets = Object.keys(bundle).filter(name => name === 'index.html' || name.startsWith('assets/'));
-      const core = ['./', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', ...assets.map(name => `./${name}`)];
+      const characters = readdirSync(resolve('public/assets/characters/quaternius'))
+        .filter(name => /\.(gltf|glb|bin|png)$/.test(name))
+        .map(name => `./assets/characters/quaternius/${name}`);
+      const core = ['./', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', ...assets.map(name => `./${name}`), ...characters];
       const source = `
 const CACHE = ${JSON.stringify(`new-dawn-shell-${version}`)};
 const CORE = ${JSON.stringify(core)};

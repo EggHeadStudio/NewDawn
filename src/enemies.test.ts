@@ -19,15 +19,19 @@ describe('hostile characters', () => {
     const armored = createEnemy('armored');
     const champion = createEnemy('champion');
     const raider = createEnemy('raider');
+    const undead = createEnemy('undead');
     expect(necromancer.getObjectByName('staff')).toBeDefined();
     expect(raider.getObjectByName('mask')).toBeDefined();
     expect(necromancer.getObjectByName('robe')).toBeDefined();
+    expect(necromancer.getObjectByName('cowl')).toBeDefined();
+    expect(undead.getObjectByName('skull')).toBeDefined();
+    expect(undead.getObjectByName('face')?.visible).toBe(false);
     expect(armored.getObjectByName('shield')).toBeDefined();
     expect(armored.getObjectByName('breastplate')).toBeDefined();
     expect(champion.scale.x).toBeGreaterThan(armored.scale.x);
     expect(armored.getObjectByName('tool-weapon')?.visible).toBe(true);
     expect(necromancer.getObjectByName('elbowR')?.getObjectByName('staff')).toBeDefined();
-    [necromancer, armored, champion, raider].forEach(disposeCharacter);
+    [necromancer, armored, champion, raider, undead].forEach(disposeCharacter);
   });
 
   it('makes melee enemies pursue and ranged enemies keep distance and fire on cooldown', () => {
