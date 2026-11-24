@@ -1,6 +1,6 @@
 import { biomeAt, seededNoise, terrainHeight } from './world';
 
-export type Species = 'deer' | 'rabbit' | 'wolf' | 'bird';
+export type Species = 'deer' | 'rabbit' | 'wolf' | 'bird' | 'bear' | 'snake' | 'squirrel' | 'reindeer' | 'moose' | 'cow' | 'sheep' | 'fox';
 export type AnimalBehavior = 'wander' | 'rest' | 'flee' | 'chase' | 'fly';
 export interface AnimalState {
   id: string;
@@ -17,12 +17,28 @@ export interface AnimalState {
   decisions: number;
 }
 
-const speciesCounts: Array<[Species, number]> = [['deer', 3], ['rabbit', 4], ['wolf', 2], ['bird', 3]];
-const maxHealth: Record<Species, number> = { deer: 3, rabbit: 1, wolf: 3, bird: 1 };
-const speeds: Record<Species, number> = { deer: 2.4, rabbit: 3, wolf: 2.8, bird: 2.5 };
+const speciesCounts: Array<[Species, number]> = [
+  ['deer', 3], ['rabbit', 4], ['wolf', 2], ['bird', 3],
+  ['bear', 1], ['snake', 2], ['squirrel', 3], ['reindeer', 2],
+  ['moose', 1], ['cow', 2], ['sheep', 3], ['fox', 2],
+];
+const maxHealth: Record<Species, number> = {
+  deer: 3, rabbit: 1, wolf: 3, bird: 1, bear: 6, snake: 1,
+  squirrel: 1, reindeer: 3, moose: 5, cow: 4, sheep: 3, fox: 2,
+};
+const speeds: Record<Species, number> = {
+  deer: 2.4, rabbit: 3, wolf: 2.8, bird: 2.5, bear: 1.8,
+  snake: 1.2, squirrel: 3.4, reindeer: 2.7, moose: 2.1,
+  cow: 1.1, sheep: 1.2, fox: 3.1,
+};
 
 function inHabitat(species: Species, biome: ReturnType<typeof biomeAt>) {
-  if (species === 'wolf') return biome === 'forest' || biome === 'rock';
+  if (species === 'wolf' || species === 'fox') return biome === 'forest' || biome === 'grass' || biome === 'rock';
+  if (species === 'bear') return biome === 'forest' || biome === 'rock';
+  if (species === 'snake') return biome === 'grass' || biome === 'desert' || biome === 'beach';
+  if (species === 'squirrel') return biome === 'forest';
+  if (species === 'reindeer' || species === 'moose') return biome === 'forest' || biome === 'snow';
+  if (species === 'cow' || species === 'sheep') return biome === 'grass';
   if (species === 'deer') return biome === 'forest' || biome === 'grass';
   return biome === 'forest' || biome === 'grass' || (species === 'bird' && biome === 'beach');
 }
@@ -51,12 +67,12 @@ export function createWildlife(seed: number, spawn: { x: number; z: number }): A
 }
 
 export function isWildlifeState(value: unknown): value is AnimalState[] {
-  if (!Array.isArray(value) || value.length > 12) return false;
+  if (!Array.isArray(value) || value.length > 40) return false;
   const ids = new Set<string>();
   return value.every(item => {
     if (typeof item !== 'object' || item === null) return false;
     const animal = item as Record<string, unknown>;
-    if (typeof animal.species !== 'string' || !['deer', 'rabbit', 'wolf', 'bird'].includes(animal.species)
+    if (typeof animal.species !== 'string' || !speciesCounts.some(([species]) => species === animal.species)
       || typeof animal.id !== 'string' || !new RegExp(`^${animal.species}-[0-9]+$`).test(animal.id) || ids.has(animal.id)
       || typeof animal.behavior !== 'string' || !['wander', 'rest', 'flee', 'chase', 'fly'].includes(animal.behavior)) return false;
     ids.add(animal.id);
@@ -81,8 +97,10 @@ export function updateWildlife(
     const playerDistance = Math.hypot(player.x - animal.x, player.z - animal.z);
     let target: { x: number; z: number } | undefined;
     let flee = false;
-    if (animal.species === 'wolf') {
-      const prey = animals.filter(other => other.health > 0 && (other.species === 'deer' || other.species === 'rabbit'))
+    if (animal.species === 'wolf' || animal.species === 'fox' || animal.species === 'bear') {
+      const prey = animals.filter(other => other.health > 0 && (
+        animal.species === 'bear' ? ['deer', 'rabbit', 'sheep', 'squirrel'].includes(other.species)
+          : ['deer', 'rabbit', 'sheep', 'squirrel'].includes(other.species)))
         .sort((a, b) => Math.hypot(a.x - animal.x, a.z - animal.z) - Math.hypot(b.x - animal.x, b.z - animal.z))[0];
       const preyDistance = prey ? Math.hypot(prey.x - animal.x, prey.z - animal.z) : Infinity;
       if (playerDistance < 7) target = player;

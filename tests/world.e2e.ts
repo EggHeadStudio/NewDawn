@@ -9,7 +9,9 @@ async function save(page: Page) {
 }
 
 type SavedWorld = { version: number; player: { x: number; z: number }; resources: { wood: number };
-  terrain: Record<string, number>; npcState: { recruited: boolean }; buildings: Array<{ kind: string; x: number; z: number }> };
+  terrain: Record<string, number>; npcState: { recruited: boolean }; buildings: Array<{ kind: string; x: number; z: number }>;
+  minerals: { ironOre: number; sand: number; coal: number }; ingots: { iron: number; copper: number; glass?: number };
+  mining: Record<string, number> };
 
 async function readRecord(page: Page, key: string) {
   return page.evaluate(key => new Promise<SavedWorld>((resolve, reject) => {
@@ -23,6 +25,44 @@ async function readRecord(page: Page, key: string) {
     };
   }), key);
 }
+
+test('migrates version 8 economy without granting glass and preserves a backup', async ({ page }) => {
+  await page.goto('./');
+  await page.locator('#newGame').click();
+  await save(page);
+  await page.evaluate(() => new Promise<void>((resolve, reject) => {
+    const request = indexedDB.open('new-dawn', 1);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const tx = db.transaction('saves', 'readwrite');
+      const store = tx.objectStore('saves');
+      const get = store.get('primary');
+      get.onsuccess = () => {
+        const data = get.result;
+        data.version = 8;
+        data.minerals.ironOre = 5;
+        data.minerals.sand = 3;
+        data.minerals.coal = 2;
+        data.ingots = { iron: 4, copper: 2 };
+        data.mining = { '4,6': 2 };
+        store.put(data, 'primary');
+      };
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onerror = () => reject(tx.error);
+    };
+  }));
+  await page.reload();
+  await page.locator('#continueGame').click();
+  await expect(page.locator('#pauseButton')).toBeVisible();
+  const backup = await readRecord(page, 'pre-glass-backup');
+  expect(backup).toMatchObject({ version: 8, ingots: { iron: 4, copper: 2 },
+    minerals: { ironOre: 5, sand: 3, coal: 2 }, mining: { '4,6': 2 } });
+  expect(backup.ingots.glass).toBeUndefined();
+  await save(page);
+  expect(await readRecord(page, 'primary')).toMatchObject({ version: 10, ingots: { iron: 4, copper: 2, glass: 0 },
+    minerals: { ironOre: 5, sand: 3, coal: 2 }, mining: { '4,6': 2 } });
+});
 
 test('preserves a legacy settlement and walks beyond the old island', async ({ page }) => {
   test.setTimeout(120000);
@@ -75,7 +115,7 @@ test('preserves a legacy settlement and walks beyond the old island', async ({ p
   expect(x).toBeGreaterThan(54);
   await save(page);
   const traveled = await readRecord(page, 'primary');
-  expect(traveled).toMatchObject({ version: 8, resources: { wood: 17 }, terrain: { '-6,-6': -0.35 },
+  expect(traveled).toMatchObject({ version: 10, resources: { wood: 17 }, terrain: { '-6,-6': -0.35 },
     npcState: { recruited: true }, buildings: [{ kind: 'storage', x: -10, z: -10 }] });
   expect(traveled.player.x).toBeGreaterThan(48);
   await page.reload();

@@ -20,12 +20,14 @@ Runtime environment geometry is original and procedural. Authored character asse
 - Eight requested species are not yet implemented
 
 ## Buildings
+- Modular wooden roofs: original procedural flat tiles and sloped gable/single-slope surfaces with end caps. Irregular gable requests use a single-slope fallback. Roofing currently has one plain dark wood material, without authored shingles or additional material variants.
 - Shelter
 - Storage
 - Lamp
 - Generator
 - Wind turbine
 - Battery and cable post
+- Wooden torch post and hand-held torch: original procedural meshes, flame geometry and pooled spark particles. No authored fire asset or fuel-dependent variations.
 
 ## Transport
 - Four-wheel rover

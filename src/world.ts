@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { CHUNK_SIZE, PLANET_HEIGHT, nearestPlanetPosition, planetCoordinates, planetHeight } from './planet';
 import { depositKinds, requiresPickaxe, type DepositKind } from './economy';
+import { obstructingTrees } from './tree-occlusion';
 
 export type Biome = 'ocean' | 'beach' | 'grass' | 'forest' | 'rock' | 'desert' | 'snow';
 type Season = 'Spring' | 'Summer' | 'Autumn' | 'Winter';
@@ -416,24 +417,8 @@ export class World {
     return ray.intersectObjects([...this.chunks.values()].map(chunk => chunk.terrain))[0]?.point;
   }
 
-  updateTreeOcclusion(ray: THREE.Raycaster) {
-    const origin = ray.ray.origin;
-    const direction = ray.ray.direction;
-    const horizontalLength = direction.x * direction.x + direction.z * direction.z;
-    const trees = this.group.children.filter(object => {
-      if (object.userData.resource !== 'wood' || horizontalLength < 0.0001) return false;
-      const dx = object.position.x - origin.x;
-      const dz = object.position.z - origin.z;
-      const along = (dx * direction.x + dz * direction.z) / horizontalLength;
-      if (along < -2 || along > ray.far + 2) return false;
-      return Math.hypot(dx - along * direction.x, dz - along * direction.z) < 2.5;
-    });
-    const obstructing = new Set<THREE.Object3D>();
-    for (const hit of ray.intersectObjects(trees, true)) {
-      let root: THREE.Object3D | null = hit.object;
-      while (root && root.userData.resource !== 'wood') root = root.parent;
-      if (root) obstructing.add(root);
-    }
+  updateTreeOcclusion(camera: THREE.Vector3, player: THREE.Vector3) {
+    const obstructing = obstructingTrees(this.group, camera, player);
     const updateMaterial = (tree: THREE.Object3D, fade: boolean) => tree.traverse(object => {
       if (!(object instanceof THREE.Mesh) || !(object.material instanceof THREE.MeshStandardMaterial)) return;
       object.material.transparent = fade;
@@ -497,6 +482,48 @@ export class World {
     const key = coordinateKey(Math.round(x), Math.round(z));
     const current = this.terrainMod.get(key) ?? 0;
     this.terrainMod.set(key, Math.max(-1.8, current - 0.35));
+    this.refreshTerrain();
+  }
+
+  editTerrain(x: number, z: number, radius: number, operation: 'lower' | 'raise' | 'flatten' | 'smooth', targetHeight?: number) {
+    const modifications: Array<{ key: string; previous: number; next: number }> = [];
+    const px = Math.floor(x);
+    const pz = Math.floor(z);
+    const baseRadius = Math.max(1, Math.ceil(radius));
+    for (let dz = -baseRadius; dz <= baseRadius; dz++) {
+      for (let dx = -baseRadius; dx <= baseRadius; dx++) {
+        if (Math.hypot(dx, dz) > radius) continue;
+        const gx = px + dx;
+        const gz = pz + dz;
+        const key = coordinateKey(gx, gz);
+        const previous = this.terrainMod.get(key) ?? 0;
+        let next = previous;
+        const edge = Math.max(0, 1 - Math.hypot(dx, dz) / (radius + 0.01));
+        const original = terrainHeight(gx, gz, this.seed);
+        if (operation === 'lower') next = previous - 0.28 * edge;
+        if (operation === 'raise') next = previous + 0.28 * edge;
+        if (operation === 'flatten' && targetHeight !== undefined) next = targetHeight - original;
+        if (operation === 'smooth') {
+          const average = [
+            this.vertexHeight(gx - 1, gz),
+            this.vertexHeight(gx + 1, gz),
+            this.vertexHeight(gx, gz - 1),
+            this.vertexHeight(gx, gz + 1),
+            this.vertexHeight(gx, gz),
+          ].reduce((sum, height) => sum + height, 0) / 5;
+          next = previous + (average - original - previous) * 0.35 * edge;
+        }
+        next = THREE.MathUtils.clamp(next, -1.8, 8);
+        if (Math.abs(next - previous) > 0.001) modifications.push({ key, previous, next });
+      }
+    }
+    for (const change of modifications) this.terrainMod.set(change.key, change.next);
+    this.refreshTerrain();
+    return modifications.map(change => ({ key: change.key, previous: change.previous, next: change.next }));
+  }
+
+  undoTerrain(changes: Array<{ key: string; previous: number; next: number }>) {
+    for (const change of changes) this.terrainMod.set(change.key, change.previous);
     this.refreshTerrain();
   }
 

@@ -5,6 +5,15 @@ import { CHUNK_SIZE, PLANET_HEIGHT, PLANET_WIDTH, nearestPlanetPosition, planetC
 import { requiresPickaxe, type DepositKind } from './economy';
 
 describe('procedural world', () => {
+  it('supports bounded terrain edits and undo', () => {
+    const world = new World(1847, 1);
+    const before = world.heightAt(0, 0);
+    const changes = world.editTerrain(0, 0, 3, 'raise');
+    expect(changes.length).toBeGreaterThan(0);
+    expect(world.heightAt(0, 0)).toBeGreaterThan(before);
+    world.undoTerrain(changes);
+    expect(world.heightAt(0, 0)).toBeCloseTo(before, 4);
+  });
   it('is deterministic for a given seed and coordinate', () => {
     expect(terrainHeight(12.5, -8, 1847)).toBe(terrainHeight(12.5, -8, 1847));
     expect(seededNoise(4, 7, 1847)).toBe(seededNoise(4, 7, 1847));
@@ -223,12 +232,11 @@ describe('procedural world', () => {
     expect(tree).toBeDefined();
     world.group.updateMatrixWorld(true);
     const origin = tree!.position.clone().add(new THREE.Vector3(0, 0.8, 5));
-    const ray = new THREE.Raycaster(origin, new THREE.Vector3(0, 0, -1), 0, 10);
-    world.updateTreeOcclusion(ray);
+    const player = tree!.position.clone().add(new THREE.Vector3(0, 0, -5));
+    world.updateTreeOcclusion(origin, player);
     const trunk = tree!.children[0] as THREE.Mesh;
     expect((trunk.material as THREE.MeshStandardMaterial).opacity).toBeLessThan(1);
-    ray.far = 1;
-    world.updateTreeOcclusion(ray);
+    world.updateTreeOcclusion(origin, tree!.position.clone().add(new THREE.Vector3(0, 0, 4)));
     expect((trunk.material as THREE.MeshStandardMaterial).opacity).toBe(1);
     world.dispose();
   });

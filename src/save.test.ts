@@ -58,4 +58,33 @@ describe('saved worlds', () => {
     expect(isSaveData({ ...save, buildings: [{ kind: 'smelter', x: 4, z: 4, y: 1, rotation: 0,
       smelting: { ore: 'ironOre', remaining: -1 } }] })).toBe(false);
   });
+  it('validates version 9 glass, furnace jobs and window attachment without weakening version 8', () => {
+    const frame = { id: 'frame', kind: 'windowframe', x: 0, z: 1, y: 2, level: 0, rotation: 0, open: false };
+    const window = { ...frame, id: 'window', kind: 'window' };
+    const save = { ...oldSave(), version: 9, appearance: defaultAppearance(), playerName: 'Survivor',
+      npcAppearanceSeed: 53917, wildlife: [], player: { x: 0, y: 2, z: 0 }, structures: [frame, window],
+      minerals: emptyMinerals(), mining: {}, ingots: { iron: 0, copper: 0, glass: 1 }, ironPickaxe: false };
+    expect(isSaveData(save)).toBe(true);
+    expect(isSaveData({ ...save, version: 8 })).toBe(false);
+    expect(isSaveData({ ...save, structures: [window] })).toBe(false);
+    expect(isSaveData({ ...save, structures: [frame, window, { ...window, id: 'duplicate' }] })).toBe(false);
+    expect(isSaveData({ ...save, ingots: { iron: 0, copper: 0 } })).toBe(false);
+    expect(isSaveData({ ...save, ingots: { iron: 0, copper: 0, glass: -1 } })).toBe(false);
+    expect(isSaveData({ ...save, pendingRoofs: [{ y: 2, level: 0 }] })).toBe(true);
+    expect(isSaveData({ ...save, pendingRoofs: [{ y: NaN, level: 0 }] })).toBe(false);
+    expect(isSaveData({ ...save, pendingRoofs: [{ y: 2, level: 4 }] })).toBe(false);
+    expect(isSaveData({ ...save, pendingRoofs: [{ y: 2, level: 0 }, { y: 2, level: 0 }] })).toBe(false);
+    const roof = { id: 'roof', kind: 'roof', x: 0, z: 0, y: 2, level: 0, rotation: 0, open: false, automatic: true,
+      roofShape: { style: 'gable', axis: 0, heights: [0, 0.9, 0] } };
+    const withRoof = { ...save, structures: [frame, window, roof], roofStyle: 'gable', roofAxis: 'x',
+      pendingRoofs: [{ y: 4.4, level: 1, style: 'single', axis: 'z' }] };
+    expect(isSaveData(JSON.parse(JSON.stringify(withRoof)))).toBe(true);
+    expect(isSaveData({ ...withRoof, roofStyle: 'hip' })).toBe(false);
+    expect(isSaveData({ ...withRoof, pendingRoofs: [{ y: 4.4, level: 1, style: 'hip' }] })).toBe(false);
+    expect(isSaveData({ ...withRoof, structures: [frame, window, { ...roof, automatic: false }] })).toBe(false);
+    expect(isSaveData({ ...withRoof, structures: [frame, window, { ...roof, roofShape: { ...roof.roofShape, heights: [0, 99, 0] } }] })).toBe(false);
+    const furnace = { kind: 'smelter', x: 4, z: 4, y: 1, rotation: 0, smelting: { ore: 'sand', remaining: 3 } };
+    expect(isSaveData({ ...save, buildings: [furnace] })).toBe(true);
+    expect(isSaveData({ ...save, version: 8, structures: [], buildings: [furnace] })).toBe(false);
+  });
 });

@@ -1,6 +1,6 @@
 export type Resource = 'wood' | 'stone' | 'food' | 'water';
 export type Inventory = Record<Resource, number>;
-export type BuildingKind = 'shelter' | 'storage' | 'lamp' | 'generator' | 'turbine' | 'battery' | 'cable' | 'smelter';
+export type BuildingKind = 'shelter' | 'storage' | 'lamp' | 'generator' | 'turbine' | 'battery' | 'cable' | 'smelter' | 'torchpost';
 export type Cost = Partial<Inventory>;
 export type Tool = 'axe' | 'pickaxe';
 export const toolCosts: Record<Tool, Cost> = {
@@ -23,6 +23,7 @@ export const buildingCosts: Record<BuildingKind, Cost> = {
   battery: { wood: 3, stone: 4 },
   cable: { wood: 1, stone: 1 },
   smelter: { wood: 6, stone: 8 },
+  torchpost: { wood: 3 },
 };
 
 export function canAfford(inventory: Inventory, cost: Cost) {
@@ -40,7 +41,7 @@ export interface BuildingPosition extends Position { kind: BuildingKind }
 
 export function buildingRadius(kind: BuildingKind) {
   return kind === 'shelter' ? 2.55 : kind === 'storage' ? 1.75
-    : kind === 'lamp' || kind === 'cable' ? 0.4 : kind === 'battery' ? 0.7 : kind === 'generator' || kind === 'smelter' ? 1.1 : 0.9;
+    : kind === 'lamp' || kind === 'cable' || kind === 'torchpost' ? 0.4 : kind === 'battery' ? 0.7 : kind === 'generator' || kind === 'smelter' ? 1.1 : 0.9;
 }
 
 export function placementProblem(position: Position, kind: BuildingKind, height: number, buildings: BuildingPosition[], player: Position) {

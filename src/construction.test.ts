@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addPiece, enclosedCells, floorSurface, pieceBlocks, pieceProblem, removePiece, snapPiece, type PieceKind, type StructuralPiece } from './construction';
+import { addPiece, enclosedCells, floorSurface, pieceBlocks, pieceProblem, removePiece, replacePiece, replacementProblem, snapPiece, suggestFloorEdge, type PieceKind, type StructuralPiece } from './construction';
 import type { Inventory } from './gameplay';
 
 function piece(kind: PieceKind, x = 0, z = 1, y = 2, level = 0): StructuralPiece {
@@ -12,6 +12,62 @@ describe('modular construction', () => {
     expect(snapPiece('floor', -1.2, 24.9, 0)).toEqual({ x: -2, z: 24 });
     expect(snapPiece('wall', 24.1, 23.8, 0)).toEqual({ x: 24, z: 23 });
     expect(snapPiece('wall', 24.1, 23.8, 1)).toEqual({ x: 25, z: 24 });
+  });
+
+  it('suggests the nearest exposed floor edge on irregular footprints and the selected level', () => {
+    const floors = [piece('floor', 0, 0), piece('floor', 2, 0), piece('floor', 0, 2), piece('floor', 0, 0, 4.4, 1)];
+    expect(suggestFloorEdge(0.1, -0.9, 0, floors)).toMatchObject({ x: 0, z: -1, rotation: 0, y: 2 });
+    expect(suggestFloorEdge(-0.9, 0.1, 0, floors)).toMatchObject({ x: -1, z: 0, rotation: 1, y: 2 });
+    expect(suggestFloorEdge(2.9, 0.1, 0, floors)).toMatchObject({ x: 3, z: 0, rotation: 1, y: 2 });
+    expect(suggestFloorEdge(0, -1, 1, floors)).toMatchObject({ x: 0, z: -1, y: 4.4 });
+    expect(suggestFloorEdge(50, 50, 0, floors)).toBeUndefined();
+    const interior = suggestFloorEdge(1, 0, 0, floors);
+    expect(interior && `${interior.x},${interior.z},${interior.rotation}`).not.toBe('1,0,1');
+    const occupied = piece('wall', 0, -1);
+    expect(suggestFloorEdge(0, 0, 0, [...floors, occupied])).toMatchObject({ x: -1, z: 0 });
+  });
+
+  it('replaces a wall atomically with a frame while preserving identity and guarding installed doors', () => {
+    const wall = piece('wall');
+    const pieces = [wall];
+    const stock = { ...inventory(), wood: 1 };
+    const frame = piece('doorframe');
+    expect(replacementProblem(frame, pieces, stock)).toBeNull();
+    expect(replacePiece(frame, pieces, stock)).toBe(true);
+    expect(stock.wood).toBe(0);
+    expect(pieces).toEqual([{ ...frame, id: wall.id }]);
+    expect(replacePiece(frame, pieces, stock)).toBe(false);
+    expect(pieces).toHaveLength(1);
+    expect(replacePiece(wall, pieces, stock)).toBe(false);
+    expect(stock.wood).toBe(0);
+    stock.wood = 5;
+    expect(addPiece(piece('door'), pieces, stock)).toBe(true);
+    const before = pieces.map(value => ({ ...value }));
+    const beforeWood = stock.wood;
+    expect(replacementProblem(wall, pieces, stock)).toBe('Remove the door before replacing its frame');
+    expect(replacePiece(wall, pieces, stock)).toBe(false);
+    expect(pieces).toEqual(before);
+    expect(stock.wood).toBe(beforeWood);
+  });
+
+  it('replaces a wall with a window frame and protects installed glass', () => {
+    const wall = piece('wall');
+    const pieces = [wall];
+    const stock = inventory();
+    const frame = piece('windowframe');
+    const glass = piece('window');
+    expect(pieceProblem(glass, pieces, stock)).toBe('Build a window frame first');
+    expect(replacePiece(frame, pieces, stock)).toBe(true);
+    expect(addPiece(glass, pieces, stock)).toBe(true);
+    expect(pieceBlocks(frame, 0, 2, 1)).toBe(true);
+    expect(pieceBlocks(glass, 0, 2, 1)).toBe(true);
+    expect(removePiece(wall.id, pieces, stock)).toBe(false);
+    expect(replacementProblem(wall, pieces, stock)).toBe('Remove the glass before replacing its frame');
+    expect(replacePiece(wall, pieces, stock)).toBe(false);
+    expect(pieces).toHaveLength(2);
+    expect(removePiece(glass.id, pieces, stock)).toBe(true);
+    expect(replacePiece(wall, pieces, stock)).toBe(true);
+    expect(pieces[0]).toMatchObject({ id: wall.id, kind: 'wall' });
   });
 
   it('charges only for valid slots, permits vertical stacking, and refunds once', () => {

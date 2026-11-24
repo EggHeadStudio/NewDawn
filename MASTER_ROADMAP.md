@@ -44,6 +44,17 @@ Progress through primitive survival, woodworking, stoneworking, farming, metal d
 
 Support multiple recruitable NPCs with unique persistent appearances, skills and personalities; gathering, mining, farming, construction, processing, storage and deliveries; work/rest schedules, housing and food needs, settlement management, NPC construction and automated villages/cities, trade, roads, logistics and inter-civilization relations.
 
+### Autonomous society and politics
+
+- Independent settlements have stable identities, suitable geographic sites, residents, homes, shared resources, buildings, security, production, growth and persistent history. Near residents use visible jobs and movement; distant communities advance through bounded, deterministic coarse simulation without duplicating people or resources on streaming or reload.
+- Individuals have persistent identities, appearance, personality, skills, needs, routines, goals, relationships, occupation, property, inventory and wealth. Personality influences actual decisions. Lumberjacks, farmers, miners, merchants, builders and guards perform real tasks, production and deliveries rather than decorative animations.
+- Households and communities own finite goods and currency. Barter and money transfer real value, prices respond in bounded ways to supply, demand, season, capacity and access, and offscreen inter-settlement trade conserves stocks and wealth.
+- Local reputation distinguishes fame, trust, respect, influence and hostility per settlement. Contextual actions and bounded histories explain changes; membership and citizenship confer explicit rights and responsibilities.
+- Territory follows sites, property, infrastructure, influence and competing claims; expansion and disputes must not overwrite player property. Governance may be tribal, council-based, elected or monarchical as appropriate, with credible laws and settlement-specific authority.
+- Periodic elections have eligible candidates and voters whose seeded decisions reflect trust, relationships, security, economy, performance and personality. A legitimately elected player can exercise real administrative powers. Regional and kingdom progression requires legitimate formation, succession and ownership, not wealth alone.
+- Bilateral diplomacy records causes, agreements, trade, alliances, grievances and leadership. Disputes, raids and war have consequences for resources, trade, safety, territory and civilians; peace, reparations and treaties must change simulation state. Supernatural enemies remain distinct from human factions.
+- The world must develop independently of the player. Persistent bounded events explain meaningful economic, political and military changes rather than relying on random decorative NPC spawns.
+
 ## 11. Transportation
 
 Develop craftable handcarts, rafts, rowboats, motorboats, cargo boats, cars, trucks, tractors, trailers, aircraft, seaplanes and helicopters. Include manufactured components and engines, fuel production/storage/consumption/refueling, repairs, cargo, ownership, NPC operation, roads, ports and airports. Survival vehicles should follow technology progression rather than spawning freely.
@@ -62,4 +73,12 @@ Provide excellent mouse/keyboard and touch controls, contextual A/B actions, pra
 
 ## Current priority
 
-Finish a playable mining-to-manufacturing and research loop with safe migration and meaningful browser acceptance; then continue construction materials and settlement progression. Preserve the authored-character foundation and its documented unfinished art requirements.
+Batch 004B order: finish pitched/irregular roofs, automatic retry and shelter; then dark nights and torches; wildlife; independent settlements; production, trade and local reputation; governance and diplomacy; and rover damage, roads, boats and manufacturing. Retain the unfinished mining-to-manufacturing and research loop, authored-character foundation and documented art requirements.
+
+## Batch 004C permanent requirements
+
+- Wildlife: implement twelve distinct species groups, authored or original procedural models, species-specific movement, biome habitats, herd/predator behavior, chunk-aware bounded populations and persistent important state.
+- Terrain engineering: provide brush, flatten, raise/lower, smooth and slope operations, construction/road/deposit protection, fill accounting, undo and chunk-persistent edits.
+- Roads: provide dirt, gravel, stone and future advanced road materials, automatic segments/intersections, grading and rover/NPC navigation compatibility.
+- Building customization: provide per-surface color and material presets, normalized freehand strokes, eraser and undo/redo, bounded paint storage and stable piece-ID persistence.
+- Graphics/UI: provide persisted fog and draw-distance controls, device-sensitive quality presets, professional tool modes and responsive safe-area layouts.

@@ -219,6 +219,7 @@ test('builds a smelter, resumes a fuelled job after reload and forges an iron pi
   await page.locator('#closeSmelter').click();
   await expect(page.locator('#toast')).toHaveText('Smelting complete', { timeout: 20000 });
   await openSmelter();
+  await expect(page.locator('#smelterStatus')).toContainText('Ready. Iron: 2');
   await page.locator('#forgePickaxe').click();
   await expect(page.locator('#toast')).toHaveText('Iron pickaxe forged');
   await page.locator('#closeSmelter').click();

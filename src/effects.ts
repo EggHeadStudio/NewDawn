@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Weather } from './calendar';
+import type { ShelterIndex } from './shelter';
 
 type Particle = { mesh: THREE.Mesh; velocity: THREE.Vector3; life: number };
 
@@ -54,6 +55,7 @@ export class Effects {
 export class Precipitation {
   private readonly points: THREE.Points;
   private readonly positions = new Float32Array(150 * 3);
+  private readonly visibility = new Float32Array(150).fill(1);
   private weather: Weather = 'Clear';
 
   constructor(scene: THREE.Scene) {
@@ -64,14 +66,21 @@ export class Precipitation {
     }
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
+    geometry.setAttribute('particleVisibility', new THREE.BufferAttribute(this.visibility, 1));
     const material = new THREE.PointsMaterial({ color: '#e2eff1', size: 0.09, transparent: true, opacity: 0.8, depthWrite: false });
+    material.onBeforeCompile = shader => {
+      shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\nattribute float particleVisibility;\nvarying float weatherVisibility;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nweatherVisibility = particleVisibility;');
+      shader.fragmentShader = shader.fragmentShader.replace('#include <common>', '#include <common>\nvarying float weatherVisibility;')
+        .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\nif (weatherVisibility < 0.5) discard;');
+    };
     this.points = new THREE.Points(geometry, material);
     this.points.frustumCulled = false;
     this.points.visible = false;
     scene.add(this.points);
   }
 
-  update(weather: Weather, focus: THREE.Vector3, dt: number) {
+  update(weather: Weather, focus: THREE.Vector3, dt: number, shelter?: ShelterIndex) {
     if (weather !== this.weather) {
       this.weather = weather;
       const material = this.points.material as THREE.PointsMaterial;
@@ -83,7 +92,9 @@ export class Precipitation {
     for (let i = 1; i < this.positions.length; i += 3) {
       this.positions[i] -= dt * (weather === 'Snow' ? 1.5 : 10);
       if (this.positions[i] < 0) this.positions[i] += 14;
+      this.visibility[(i - 1) / 3] = shelter?.coverAt(focus.x + this.positions[i - 1], focus.y + this.positions[i], focus.z + this.positions[i + 1]) ? 0 : 1;
     }
     this.points.geometry.attributes.position.needsUpdate = true;
+    this.points.geometry.attributes.particleVisibility.needsUpdate = true;
   }
 }

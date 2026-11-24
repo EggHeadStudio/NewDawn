@@ -11,7 +11,10 @@ describe('wildlife', () => {
     const spawn = safeSpawn(1847)!;
     const animals = createWildlife(1847, spawn);
     expect(animals).toEqual(createWildlife(1847, spawn));
-    expect(new Set(animals.map(item => item.species))).toEqual(new Set(['deer', 'rabbit', 'wolf', 'bird']));
+    expect(new Set(animals.map(item => item.species))).toEqual(new Set([
+      'deer', 'rabbit', 'wolf', 'bird', 'bear', 'snake', 'squirrel',
+      'reindeer', 'moose', 'cow', 'sheep', 'fox',
+    ]));
     expect(isWildlifeState(animals)).toBe(true);
     for (const item of animals) {
       expect(biomeAt(item.x, item.z, 1847)).not.toBe('ocean');
