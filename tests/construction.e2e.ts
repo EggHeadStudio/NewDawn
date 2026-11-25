@@ -29,6 +29,8 @@ async function setFixture(page: Page, scenario: 'legacy' | 'door') {
       const get = store.get('primary');
       get.onsuccess = () => {
         const data = get.result;
+        data.version = 11;
+        delete data.planetPositions;
         if (scenario === 'legacy') {
           data.version = 6;
           delete data.structures;
@@ -434,6 +436,8 @@ test('climbs fixture-built stairs and renders a roof after reloading', async ({ 
       let start: { x: number; z: number; y: number };
       get.onsuccess = () => {
         const data = get.result;
+        data.version = 11;
+        delete data.planetPositions;
         const x = Math.round(data.player.x / 2) * 2;
         const z = Math.round(data.player.z / 2) * 2;
         const y = data.player.y;
@@ -634,6 +638,8 @@ test('retries an unpaid roof after gathering wood and reloads without duplicate 
         const get = store.get('primary');
         get.onsuccess = () => {
           const data = get.result;
+          data.version = 11;
+          delete data.planetPositions;
           const world = new World(data.seed);
           const tree = world.group.children.find(item => item.userData.resource === 'wood'
             && !world.findNearestDeposit(item.position.x, item.position.z, 1));

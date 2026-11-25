@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { isSaveData } from './save';
 import { defaultAppearance } from './appearance';
 import { emptyMinerals } from './economy';
+import { PLANET_WIDTH, planetPositionToGeographic } from './planet';
 
 function oldSave() {
   return {
@@ -100,5 +101,33 @@ describe('saved worlds', () => {
     expect(isSaveData({ ...save, roads: [{ ...save.roads[0], kind: 'unknown' }] })).toBe(false);
     expect(isSaveData({ ...save, stones: 12, selectedWeapon: 'stones' })).toBe(true);
     expect(isSaveData({ ...save, stones: -1 })).toBe(false);
+    expect(isSaveData({ ...save, player: { x: PLANET_WIDTH / 2 - 4, y: 1, z: 180 },
+      npc: { x: -PLANET_WIDTH / 2 + 5, z: 180 }, vehicle: { x: 0, z: 0 },
+      buildings: [{ kind: 'storage', x: -PLANET_WIDTH / 2 + 5, z: 180, y: 1, rotation: 0 }] })).toBe(true);
+    expect(isSaveData({ ...save, player: { x: PLANET_WIDTH * 3, y: 1, z: 0 } })).toBe(false);
+  });
+  it('requires valid canonical player and vehicle positions in version 12 saves', () => {
+    const save = { ...oldSave(), version: 12, appearance: defaultAppearance(), playerName: 'Survivor',
+      npcAppearanceSeed: 53917, wildlife: [], player: { x: 0, y: 1, z: 5 }, structures: [],
+      minerals: emptyMinerals(), mining: {}, ingots: { iron: 0, copper: 0, glass: 0 }, ironPickaxe: false,
+      roads: [], paint: [], atlas: { explored: [], markers: [], zoom: 4, centerLatitude: 0,
+        centerLongitude: 0, level: 'world' },
+      planetPositions: {
+        player: planetPositionToGeographic(0, 5),
+        vehicle: planetPositionToGeographic(8, 4),
+      } };
+    expect(isSaveData(save)).toBe(true);
+    expect(isSaveData({ ...save, planetPositions: undefined })).toBe(false);
+    expect(isSaveData({ ...save, planetPositions: { ...save.planetPositions,
+      player: { ...save.planetPositions.player, latitude: 91 } } })).toBe(false);
+    expect(isSaveData({ ...save, planetPositions: { ...save.planetPositions,
+      vehicle: { ...save.planetPositions.vehicle, longitude: 180 } } })).toBe(false);
+    expect(isSaveData({ ...save, planetPositions: { ...save.planetPositions,
+      player: planetPositionToGeographic(PLANET_WIDTH / 4, 5) } })).toBe(false);
+    const withNpc = { ...save, planetPositions: { ...save.planetPositions,
+      npc: planetPositionToGeographic(-4, 2) } };
+    expect(isSaveData(withNpc)).toBe(true);
+    expect(isSaveData({ ...withNpc, planetPositions: { ...withNpc.planetPositions,
+      npc: planetPositionToGeographic(PLANET_WIDTH / 4, 2) } })).toBe(false);
   });
 });

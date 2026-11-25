@@ -1,4 +1,16 @@
-# Development status — Batch 005B partial checkpoint
+# Development status — Batch 005C geographic movement checkpoint
+
+## Batch 005C — in progress
+
+- Expanded the live streamed world from the legacy 3,072 × 1,536-unit repeat to an Earth-scale equirectangular meter domain (about 40,030,176 × 20,015,088 meters), rounded to chunk-aligned dimensions. The Atlas now samples one-degree cells from the same deterministic world biome source used by terrain generation, with seed-bounded cached samples and existing explored-tile fog.
+- Added canonical geographic movement for the player, rover, Mira and wildlife using great-circle destinations; player and rover retain transported headings. NPC/wildlife range, predator and prey checks now use geodesic distances. Projected x/z remains the runtime rendering and collision compatibility frame.
+- Corrected the bearing conversions between projected east/north axes and camera-relative controls, and parallel-transport camera, character and rover headings during travel.
+- Version-12 saves persist canonical player and vehicle latitude/longitude and now optionally persist Mira's position; animals carry optional canonical positions in their saved state. Canonical and projected coordinates are validated when present, while prior version-12 and versions 1–11 saves derive positions from projected coordinates and retain existing migration/backup behavior.
+- Added latitude-selected deciduous/conifer tree families, evergreen autumn behavior and sparse procedural cactus geometry in generated deserts. Corrected the latitude scale used by terrain climate tinting. This is a first vegetation slice, not global biome or visual acceptance.
+- Added a scene-root render origin that recenters at 1,024-meter intervals while preserving global gameplay coordinates. Terrain/building ray hits are converted back to global coordinates. A stable Edge journey crosses the longitude seam on dry terrain, retains a nearby settlement, and reloads the save.
+- Verified bounded 24-meter chunk streaming and persistent terrain edits at a remote 1,000-kilometer coordinate, as well as seam-aware power links. This extends the existing local chunk system; it does not add LOD or worker generation.
+- Current focused validation: 42 unit tests pass across geography, world, wildlife, save and Atlas tests; production build passes; 3 targeted Microsoft Edge tests pass for high-latitude Mira movement/save-reload, generated-biome Atlas pixels and streamed desert vegetation. Actual Atlas and desert gameplay screenshots were reviewed. The earlier full regression remains 47/47 before these changes; the full suite has not been rerun. No physical-device testing was performed.
+- **Not complete:** terrain, structures, collision and rendering still use a flat equirectangular projection; NPC and wildlife canonical movement is only a partial entity integration. There is no integrated local-tangent scene frame, hierarchical LOD, worker generation, distant terrain rendering, ocean traversal, or full planetary acceptance. The broader 005C art, wildlife, physics, construction and UI work remains open.
 
 ## Batch 005B — in progress
 
@@ -16,7 +28,7 @@
 - Added a functional World Atlas: M and the Atlas quick control open an illustrated canvas map with World/Continent/Region/Local scale selection, pan, zoom, explored-region fog, named persistent markers and straight-line route estimates.
 - Connected hemispheric-season and geography-aware weather selection to the gameplay loop; polar/tundra and hot-desert biome families affect weather and terrain tinting in the first implementation slice.
 - Version 11 saves optional atlas explored-tile and marker state. Version 1–10 worlds receive a browser-local `pre-planet-engine-backup`. The complete stable Edge suite passes 44/44 tests.
-- This is **not a complete Earth-scale planet**. The existing Three.js world still uses the legacy 3,072 by 1,536-unit local projection and 24-unit chunks. It does not yet provide real 40-million-meter gameplay traversal, workers, hierarchical LOD, a full continent generator or marine simulation. The atlas is connected to canonical latitude/longitude utilities but distant terrain and civilization visual acceptance remain unfinished.
+- At the 005A checkpoint this was still a 3,072 by 1,536-unit projection. Batch 005C has since expanded the live coordinate domain and added scene-root recentering. It remains **not a complete spherical planet**: metric travel at higher latitudes, curved local rendering, hierarchical LOD, workers, marine simulation and global acceptance remain unfinished.
 
 ## Batch 004C — in progress
 

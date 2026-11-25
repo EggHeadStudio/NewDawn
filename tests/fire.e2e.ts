@@ -28,6 +28,10 @@ async function worldRecord(page: Page, update?: 'resources' | 'night' | 'day') {
       get.onsuccess = () => {
         data = get.result;
         if (update === 'resources') {
+          data.version = 11;
+          delete data.planetPositions;
+        }
+        if (update === 'resources') {
           data.resources.wood = 30;
           data.minerals.coal = 2;
           data.npc = { x: data.player.x + 30, z: data.player.z + 30 };

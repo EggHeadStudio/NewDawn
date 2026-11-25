@@ -133,6 +133,8 @@ test('makes glass in the furnace and installs it into a wall replacement', async
       const get = store.get('primary');
       get.onsuccess = () => {
         const data = get.result as SavedWorld;
+        data.version = 11;
+        delete data.planetPositions;
         const furnace = data.buildings.find(building => building.kind === 'smelter')!;
         data.player.x = furnace.x + 1.5;
         data.player.z = furnace.z;
@@ -198,7 +200,7 @@ test('makes glass in the furnace and installs it into a wall replacement', async
   await page.locator('#continueGame').click();
   await expect(page.locator('#pauseButton')).toBeVisible();
   expect((await readSave(page)).structures).toEqual(built.structures);
-  expect((await readSave(page)).version).toBe(11);
+  expect((await readSave(page)).version).toBe(12);
 });
 
 test('a window without glass is rejected without consuming wood', async ({ page }) => {

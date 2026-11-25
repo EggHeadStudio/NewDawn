@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { updatePower, type PowerNode } from './power';
+import { PLANET_WIDTH } from './planet';
 
 function node(kind: PowerNode['kind'], x: number, charge = 0): PowerNode {
   return { kind, x, z: 0, charge, powered: false };
@@ -38,9 +39,9 @@ describe('electrical network', () => {
     expect(nodes[3].powered).toBe(false);
   });
   it('keeps a power network connected across longitude copies', () => {
-    const turbine = node('turbine', 1535);
-    const generator = node('generator', -1535);
-    const lamp = node('lamp', -1532);
+    const turbine = node('turbine', PLANET_WIDTH / 2 - 1);
+    const generator = node('generator', -PLANET_WIDTH / 2 + 1);
+    const lamp = node('lamp', -PLANET_WIDTH / 2 + 4);
     updatePower([turbine, generator, lamp], 1, 1);
     expect(lamp.powered).toBe(true);
   });

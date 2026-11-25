@@ -1,6 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
 
 type TestSave = {
+  version: number;
+  planetPositions?: unknown;
   seed: number;
   player: { x: number; y: number; z: number };
   npc: { x: number; z: number };
@@ -57,6 +59,8 @@ for (const viewport of [
           request.onsuccess = () => {
             const db = request.result;
             const tx = db.transaction('saves', 'readwrite');
+            save.version = 11;
+            delete save.planetPositions;
             save.player = { x: result.x, y: 1, z: result.z };
             save.npc = { x: result.x + 20, z: result.z + 20 };
             save.vehicle = { x: result.x + 25, z: result.z + 25 };
@@ -183,6 +187,8 @@ test('builds a smelter, resumes a fuelled job after reload and forges an iron pi
       const get = store.get('primary');
       get.onsuccess = () => {
         const data = get.result as TestSave;
+        data.version = 11;
+        delete data.planetPositions;
         const smelter = data.buildings.find(building => building.kind === 'smelter')!;
         data.player.x = smelter.x + 1.5;
         data.player.z = smelter.z;
@@ -236,6 +242,8 @@ test('builds a smelter, resumes a fuelled job after reload and forges an iron pi
         const get = store.get('primary');
         get.onsuccess = () => {
           const data = get.result as TestSave;
+          data.version = 11;
+          delete data.planetPositions;
           const world = new World(data.seed);
           const deposit = world.group.children.find(item => item.userData.mineral === 'ironOre'
             && data.buildings.every(building => Math.hypot(building.x - item.position.x, building.z - item.position.z) > 5));

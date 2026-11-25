@@ -9,6 +9,8 @@ export interface GeographicPosition {
   regionId: string;
 }
 
+type Vector3 = { x: number; y: number; z: number };
+
 export type ClimateZone =
   | 'polar-ice' | 'tundra' | 'alpine' | 'boreal' | 'temperate-deciduous'
   | 'temperate-mixed' | 'grassland' | 'steppe' | 'savanna' | 'hot-desert'
@@ -39,6 +41,88 @@ export function normalizeLatitude(latitude: number) {
 
 export function normalizeLongitude(longitude: number) {
   return ((longitude + 180) % 360 + 360) % 360 - 180;
+}
+
+function unitPosition(latitude: number, longitude: number): Vector3 {
+  const lat = normalizeLatitude(latitude) * Math.PI / 180;
+  const lon = normalizeLongitude(longitude) * Math.PI / 180;
+  return { x: Math.cos(lat) * Math.cos(lon), y: Math.cos(lat) * Math.sin(lon), z: Math.sin(lat) };
+}
+
+function ecefPosition(position: Pick<GeographicPosition, 'latitude' | 'longitude' | 'altitude'>): Vector3 {
+  const unit = unitPosition(position.latitude, position.longitude);
+  const radius = EARTH_RADIUS_METERS + position.altitude;
+  return { x: unit.x * radius, y: unit.y * radius, z: unit.z * radius };
+}
+
+function tangentBasis(latitude: number, longitude: number) {
+  const lat = normalizeLatitude(latitude) * Math.PI / 180;
+  const lon = normalizeLongitude(longitude) * Math.PI / 180;
+  return {
+    east: { x: -Math.sin(lon), y: Math.cos(lon), z: 0 },
+    north: { x: -Math.sin(lat) * Math.cos(lon), y: -Math.sin(lat) * Math.sin(lon), z: Math.cos(lat) },
+  };
+}
+
+function dot(a: Vector3, b: Vector3) {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function cross(a: Vector3, b: Vector3): Vector3 {
+  return { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x };
+}
+
+function rotateAroundAxis(vector: Vector3, axis: Vector3, angle: number): Vector3 {
+  const cosine = Math.cos(angle);
+  const sine = Math.sin(angle);
+  const perpendicular = cross(axis, vector);
+  const parallelScale = dot(axis, vector) * (1 - cosine);
+  return {
+    x: vector.x * cosine + perpendicular.x * sine + axis.x * parallelScale,
+    y: vector.y * cosine + perpendicular.y * sine + axis.y * parallelScale,
+    z: vector.z * cosine + perpendicular.z * sine + axis.z * parallelScale,
+  };
+}
+
+function geographicFromEcef(position: Vector3): GeographicPosition {
+  const radius = Math.hypot(position.x, position.y, position.z);
+  const latitude = Math.asin(position.z / radius) * 180 / Math.PI;
+  const longitude = Math.atan2(position.y, position.x) * 180 / Math.PI;
+  return {
+    planetId: 'new-dawn-earth',
+    latitude,
+    longitude: normalizeLongitude(longitude),
+    altitude: radius - EARTH_RADIUS_METERS,
+    regionId: regionIdForCoordinates(latitude, longitude),
+  };
+}
+
+export function transportBearing(
+  start: Pick<GeographicPosition, 'latitude' | 'longitude'>,
+  destination: Pick<GeographicPosition, 'latitude' | 'longitude'>,
+  bearingDegrees: number,
+) {
+  const startUp = unitPosition(start.latitude, start.longitude);
+  const destinationUp = unitPosition(destination.latitude, destination.longitude);
+  const axis = cross(startUp, destinationUp);
+  const axisLength = Math.hypot(axis.x, axis.y, axis.z);
+  if (axisLength < 1e-12) return ((bearingDegrees % 360) + 360) % 360;
+  axis.x /= axisLength;
+  axis.y /= axisLength;
+  axis.z /= axisLength;
+  const angle = Math.atan2(axisLength, dot(startUp, destinationUp));
+  const startBasis = tangentBasis(start.latitude, start.longitude);
+  const bearing = bearingDegrees * Math.PI / 180;
+  const heading = {
+    x: startBasis.north.x * Math.cos(bearing) + startBasis.east.x * Math.sin(bearing),
+    y: startBasis.north.y * Math.cos(bearing) + startBasis.east.y * Math.sin(bearing),
+    z: startBasis.north.z * Math.cos(bearing) + startBasis.east.z * Math.sin(bearing),
+  };
+  const transported = rotateAroundAxis(heading, axis, angle);
+  const destinationBasis = tangentBasis(destination.latitude, destination.longitude);
+  const east = dot(transported, destinationBasis.east);
+  const north = dot(transported, destinationBasis.north);
+  return (Math.atan2(east, north) * 180 / Math.PI + 360) % 360;
 }
 
 export function geographicDistanceMeters(a: Pick<GeographicPosition, 'latitude' | 'longitude'>,
@@ -106,25 +190,32 @@ export function localOriginAt(latitude: number, longitude: number) {
 
 export function geographicToLocal(origin: { latitude: number; longitude: number },
   position: Pick<GeographicPosition, 'latitude' | 'longitude'>) {
-  const east = geographicDistanceMeters(
-    { latitude: origin.latitude, longitude: origin.longitude },
-    { latitude: origin.latitude, longitude: position.longitude },
-  ) * (normalizeLongitude(position.longitude - origin.longitude) >= 0 ? 1 : -1);
-  const north = geographicDistanceMeters(
-    { latitude: origin.latitude, longitude: origin.longitude },
-    { latitude: position.latitude, longitude: origin.longitude },
-  ) * (position.latitude >= origin.latitude ? 1 : -1);
-  return { x: east, z: -north };
+  const originPosition = ecefPosition({ ...origin, altitude: 0 });
+  const target = ecefPosition({ ...position, altitude: 0 });
+  const basis = tangentBasis(origin.latitude, origin.longitude);
+  const offset = { x: target.x - originPosition.x, y: target.y - originPosition.y, z: target.z - originPosition.z };
+  return { x: dot(offset, basis.east), z: -dot(offset, basis.north) };
 }
 
 export function localToGeographic(origin: { latitude: number; longitude: number }, xMeters: number, zMeters: number) {
-  const eastDistance = Math.abs(xMeters);
-  const east = moveGeographic(
-    { latitude: origin.latitude, longitude: origin.longitude, altitude: 0 },
-    xMeters >= 0 ? 90 : 270,
-    eastDistance,
-  );
-  return moveGeographic(east, zMeters >= 0 ? 180 : 0, Math.abs(zMeters));
+  const originPosition = ecefPosition({ ...origin, altitude: 0 });
+  const basis = tangentBasis(origin.latitude, origin.longitude);
+  const offset = {
+    x: basis.east.x * xMeters - basis.north.x * zMeters,
+    y: basis.east.y * xMeters - basis.north.y * zMeters,
+    z: basis.east.z * xMeters - basis.north.z * zMeters,
+  };
+  const position = {
+    x: originPosition.x + offset.x,
+    y: originPosition.y + offset.y,
+    z: originPosition.z + offset.z,
+  };
+  const radius = Math.hypot(position.x, position.y, position.z);
+  return geographicFromEcef({
+    x: position.x * EARTH_RADIUS_METERS / radius,
+    y: position.y * EARTH_RADIUS_METERS / radius,
+    z: position.z * EARTH_RADIUS_METERS / radius,
+  });
 }
 
 export function climateZone(latitude: number, altitudeMeters: number, distanceToOceanKm: number, moisture: number,

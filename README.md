@@ -1,6 +1,6 @@
 # EggHeadStudio: New Dawn
 
-A work-in-progress 3D survival and settlement game. Terrain now streams beyond the original island and has periodic longitude and reflected polar coordinates. This is a **partial planetary foundation**, not yet a fully simulated or freely traversable planet. See [development status](DEVELOPMENT_STATUS.md) for limitations.
+A work-in-progress 3D survival and settlement game. The streamed world uses Earth-scale projected meter coordinates, periodic longitude, reflected polar coordinates, and a scene-root render origin. Player and rover travel now use great-circle geographic movement with canonical geographic save positions. The broader simulation and terrain still use a flat projected frame, so full spherical-world behavior is incomplete. See [development status](DEVELOPMENT_STATUS.md) for limitations.
 
 The long-term vision and unfinished dependencies are recorded in the [master roadmap](MASTER_ROADMAP.md) and [implementation tracker](IMPLEMENTATION_TRACKER.md).
 
@@ -26,7 +26,7 @@ Open the URL printed by Vite. Node.js 20.19+ or 22.12+ is required. On systems w
 - **Interact:** E near Mira or the rover; elsewhere, E digs. Recruit Mira, build storage, then assign wood or stone gathering.
 - **Terrain:** the `◇ Terrain` quick control opens Dig, Raise, Flatten, Smooth and Slope editing with a brush radius. Existing structures and roads are protected. Recent edits can be undone.
 - **Roads:** the `╬ Road` quick control places automatically connected dirt, gravel or stone road segments. Gravel costs 2 stone and stone roads cost 4 stone.
-- **Atlas:** press M or tap the `◎ Atlas` quick control to open the illustrated world map. Pan and zoom in World/Continent/Region/Local scales, reveal explored regions, add named markers and estimate straight-line route time. The atlas is a partial planet foundation: geographic utilities and rendering are functional, while global streaming remains limited to the existing local terrain engine.
+- **Atlas:** press M or tap the `◎ Atlas` quick control to open the illustrated world map. Pan and zoom in World/Continent/Region/Local scales, reveal explored regions, add named markers and estimate straight-line route time. Player coordinates and the atlas share the Earth-scale projection; terrain still streams only in bounded nearby 24-meter chunks, without regional LOD.
 - **Movement and combat:** press V or use the mobile Jump control to jump. C throws a stone if stones are available. The compact tool hub selects fists, stick, axe, throwing stones and other build/world tools. Walls and closed structures block player/enemy movement and obstruct melee/projectile attacks.
 - **Paint:** the `◒ Paint` quick control targets walls, floors, doors and roofs; it provides starter wood, paint and stone presets, erasing, surface strokes and undo.
 - **Graphics:** Pause provides persistent fog start/end, terrain distance and Low/Medium/High quality presets. Settings are stored locally and do not reset the world.

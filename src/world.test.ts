@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { biomeAt, safeSpawn, seededNoise, terrainHeight, World } from './world';
-import { CHUNK_SIZE, PLANET_HEIGHT, PLANET_WIDTH, nearestPlanetPosition, planetCoordinates } from './planet';
+import { biomeAt, safeSpawn, seededNoise, terrainHeight, vegetationFamilyAt, World } from './world';
+import {
+  CHUNK_SIZE, PLANET_HEIGHT, PLANET_WIDTH, geographicToPlanetPosition, nearestPlanetPosition,
+  planetCoordinates, planetDistanceMeters, planetPositionToGeographic,
+} from './planet';
+import { geographicDistanceMeters } from './geography';
 import { requiresPickaxe, type DepositKind } from './economy';
 
 describe('procedural world', () => {
@@ -25,6 +29,42 @@ describe('procedural world', () => {
       for (let x = -40; x <= 40; x += 4) biomes.add(biomeAt(x, z, 1847));
     }
     expect(biomes.size).toBeGreaterThanOrEqual(3);
+  });
+
+  it('selects deterministic vegetation families across the generated planet', () => {
+    const families = new Set<string>();
+    for (let latitude = -80; latitude <= 80; latitude += 5) {
+      for (let longitude = -180; longitude < 180; longitude += 5) {
+        const point = geographicToPlanetPosition(latitude, longitude);
+        families.add(vegetationFamilyAt(point.x, point.z, 1847));
+      }
+    }
+    for (const family of ['deciduous', 'conifer', 'cactus', 'none']) expect(families).toContain(family);
+  });
+
+  it('streams cactus geometry into arid planetary chunks', () => {
+    let location: { x: number; z: number } | undefined;
+    for (let latitude = 5; latitude <= 40 && !location; latitude++) {
+      for (let longitude = -180; longitude < 180 && !location; longitude++) {
+        const center = geographicToPlanetPosition(latitude, longitude);
+        for (let dz = -1; dz <= 1 && !location; dz++) {
+          for (let dx = -1; dx <= 1 && !location; dx++) {
+            const x = Math.round(center.x / 3) * 3 + dx * 3;
+            const z = Math.round(center.z / 3) * 3 + dz * 3;
+            const point = planetCoordinates(x, z);
+            const px = x + seededNoise(point.x, point.z, 1847) - 0.5;
+            const pz = z + (seededNoise(point.z, point.x, 1850) - 0.5) * (point.reflected ? -1 : 1);
+            if (terrainHeight(px, pz, 1847) > 0.45 && vegetationFamilyAt(px, pz, 1847) === 'cactus'
+              && seededNoise(point.x, point.z, 1855) > 0.91) location = { x, z };
+          }
+        }
+      }
+    }
+    expect(location).toBeDefined();
+    const world = new World(1847);
+    world.updateChunks(location!.x, location!.z, true);
+    expect(world.group.children.some(object => object.userData.vegetationFamily === 'cactus')).toBe(true);
+    world.dispose();
   });
 
   it('keeps terrain bounded to a navigable range', () => {
@@ -84,12 +124,47 @@ describe('procedural world', () => {
         expect(terrainHeight(x, z, 1847)).toBeCloseTo(terrainHeight(x + PLANET_WIDTH, z, 1847), 7);
       }
     }
-    expect(planetCoordinates(10, PLANET_HEIGHT / 2 + 5)).toEqual({ x: -1526, z: PLANET_HEIGHT / 2 - 5, reflected: true });
+    const reflected = planetCoordinates(10, PLANET_HEIGHT / 2 + 5);
+    expect(reflected.x).toBe(10 - PLANET_WIDTH / 2);
+    expect(reflected.z).toBeCloseTo(PLANET_HEIGHT / 2 - 5, 6);
+    expect(reflected.reflected).toBe(true);
     expect(terrainHeight(10, PLANET_HEIGHT / 2 + 5, 1847))
-      .toBeCloseTo(terrainHeight(-1526, PLANET_HEIGHT / 2 - 5, 1847), 7);
+      .toBeCloseTo(terrainHeight(reflected.x, reflected.z, 1847), 7);
     expect(terrainHeight(0, PLANET_HEIGHT / 2, 1847)).toBeCloseTo(terrainHeight(900, PLANET_HEIGHT / 2, 1847), 7);
-    expect(nearestPlanetPosition(-1530, 0, 1530, 0)).toEqual({ x: 1542, z: 0 });
-    expect(nearestPlanetPosition(-1526, 763, 10, 773)).toEqual({ x: 10, z: 773 });
+    expect(nearestPlanetPosition(-PLANET_WIDTH / 2 + 6, 0, PLANET_WIDTH / 2 - 6, 0))
+      .toEqual({ x: PLANET_WIDTH / 2 + 6, z: 0 });
+    expect(nearestPlanetPosition(-PLANET_WIDTH / 2 + 10, PLANET_HEIGHT / 2 - 5,
+      10, PLANET_HEIGHT / 2 + 5)).toEqual({ x: 10, z: PLANET_HEIGHT / 2 + 5 });
+  });
+
+  it('maps live world-meter coordinates to geographic positions and back', () => {
+    expect(PLANET_WIDTH).toBeCloseTo(40_030_173, -2);
+    expect(PLANET_HEIGHT).toBeCloseTo(20_015_086, -2);
+    const origin = planetPositionToGeographic(0, 0);
+    const tenKilometersEast = planetPositionToGeographic(10_000, 0);
+    expect(geographicDistanceMeters(origin, tenKilometersEast)).toBeCloseTo(10_000, 0);
+    const roundTrip = geographicToPlanetPosition(tenKilometersEast.latitude, tenKilometersEast.longitude);
+    expect(roundTrip.x).toBeCloseTo(10_000, 6);
+    expect(roundTrip.z).toBeCloseTo(0, 6);
+  });
+
+  it('measures projected east-west distances in true local meters', () => {
+    const equator = geographicToPlanetPosition(0, 0);
+    const equatorEast = geographicToPlanetPosition(0, 0.01);
+    const highLatitude = geographicToPlanetPosition(60, 0);
+    const highLatitudeEast = geographicToPlanetPosition(60, 0.01);
+    expect(planetDistanceMeters(equator, equatorEast)).toBeCloseTo(1111.95, 0);
+    expect(planetDistanceMeters(highLatitude, highLatitudeEast)).toBeCloseTo(555.97, 0);
+  });
+
+  it('keeps canonical geography continuous at the date line and across a pole', () => {
+    const acrossDateLine = planetPositionToGeographic(PLANET_WIDTH / 2 + 10, 0);
+    expect(acrossDateLine.longitude).toBeCloseTo(-180 + 10 / PLANET_WIDTH * 360, 8);
+
+    const beyondNorthPole = planetPositionToGeographic(10, PLANET_HEIGHT / 2 + 5);
+    const reflected = planetPositionToGeographic(10 - PLANET_WIDTH / 2, PLANET_HEIGHT / 2 - 5);
+    expect(beyondNorthPole.latitude).toBeCloseTo(reflected.latitude, 8);
+    expect(Math.abs(beyondNorthPole.longitude - reflected.longitude)).toBeCloseTo(0, 8);
   });
 
   it('shares exact terrain vertices across adjacent chunk boundaries', () => {
@@ -133,6 +208,25 @@ describe('procedural world', () => {
     expect(restored.gatherNearest(x, z, 0.1)).toBeUndefined();
     world.dispose();
     restored.dispose();
+  });
+
+  it('streams distant metric terrain and retains edits across unloads', () => {
+    const world = new World(1847, 1);
+    const x = 1_000_000;
+    const z = 250_000;
+    world.updateChunks(x, z, true);
+    const before = world.heightAt(x, z);
+    const changes = world.editTerrain(x, z, 2, 'lower');
+    expect(changes.length).toBeGreaterThan(0);
+    const edited = world.heightAt(x, z);
+    expect(edited).toBeLessThan(before);
+    expect(world.loadedChunkCount).toBe(9);
+    world.updateChunks(0, 0, true);
+    expect(world.loadedChunkCount).toBe(9);
+    world.updateChunks(x, z, true);
+    expect(world.heightAt(x, z)).toBeCloseTo(edited, 5);
+    expect(world.loadedChunkCount).toBe(9);
+    world.dispose();
   });
 
   it('mines finite deposits, requires a pickaxe, and preserves partial progress across streaming and reload', () => {
@@ -187,7 +281,7 @@ describe('procedural world', () => {
     const kind = deposit!.userData.mineral;
     const id = deposit!.userData.depositId;
     expect(world.mineDeposit(deposit!, true)).toMatchObject({ progress: 1 });
-    world.updateChunks(-1536, 180, true);
+    world.updateChunks(x - PLANET_WIDTH, z, true);
     const wrapped = world.findNearestDeposit(x - PLANET_WIDTH, z, 0.1);
     expect(wrapped?.userData).toMatchObject({ depositId: id, mineral: kind });
     expect(world.mineDeposit(wrapped!, true)).toMatchObject({ progress: 2 });
@@ -221,7 +315,7 @@ describe('procedural world', () => {
     expect(resource).toBeDefined();
     const { x, z } = resource!.position;
     expect(world.gatherNearest(x, z, 0.1)).toBeDefined();
-    world.updateChunks(-1536, 180, true);
+    world.updateChunks(x - PLANET_WIDTH, z, true);
     expect(world.gatherNearest(x - PLANET_WIDTH, z, 0.1)).toBeUndefined();
     world.dispose();
   });

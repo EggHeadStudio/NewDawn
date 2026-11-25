@@ -75,6 +75,8 @@ async function setScenario(page: Page, scenario: 'npc' | 'vehicle' | 'combat') {
       const get = store.get('primary');
       get.onsuccess = () => {
         const data = get.result;
+        data.version = 11;
+        delete data.planetPositions;
         if (scenario === 'npc') {
           data.resources.wood = 10;
           data.resources.stone = 10;

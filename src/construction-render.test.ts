@@ -21,4 +21,17 @@ describe('construction visibility', () => {
     expect(opacity.getX(0)).toBeGreaterThan(0.98);
     expect(opacity.getX(1)).toBeCloseTo(1);
   });
+
+  it('keeps construction occlusion aligned with a translated render origin', () => {
+    const renderer = new ConstructionRenderer();
+    renderer.refresh([{
+      id: 'distant-blocking', kind: 'wall', x: 1024, z: 1, y: 0, level: 0, rotation: 0, open: false,
+    }]);
+    const renderOrigin = new THREE.Vector3(1024, 0, 0);
+    renderer.group.position.copy(renderOrigin).negate();
+    renderer.update(1, new THREE.Vector3(1024, 0, 0), new THREE.Vector3(1024, 2, 5), renderOrigin);
+    const mesh = renderer.group.children.find(child => child instanceof THREE.InstancedMesh
+      && child.geometry.getAttribute('instanceOpacity')) as THREE.InstancedMesh;
+    expect(mesh.geometry.getAttribute('instanceOpacity').getX(0)).toBeLessThan(0.35);
+  });
 });

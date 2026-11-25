@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createWildlife, isWildlifeState, updateWildlife, type AnimalState } from './wildlife';
 import { biomeAt, safeSpawn } from './world';
+import { geographicDistanceMeters } from './geography';
+import { geographicToPlanetPosition, planetPositionToGeographic } from './planet';
 
 function animal(species: AnimalState['species'], x: number, z: number): AnimalState {
   return { id: `${species}-0`, species, x, z, homeX: x, homeZ: z, heading: 0, health: species === 'rabbit' ? 1 : 3, behavior: 'wander', decisionTimer: 1, attackTimer: 0, decisions: 0 };
@@ -41,5 +43,20 @@ describe('wildlife', () => {
     expect(animals.map(item => item.species)).toEqual(['wolf']);
     expect(isWildlifeState([{ ...wolf, health: -1 }])).toBe(false);
     expect(isWildlifeState([wolf, wolf])).toBe(false);
+  });
+
+  it('moves wildlife by real meters at high latitudes and preserves canonical positions', () => {
+    const projected = geographicToPlanetPosition(60, 10);
+    const deer = animal('deer', projected.x, projected.z);
+    const origin = planetPositionToGeographic(projected.x, projected.z);
+    deer.geographic = origin;
+    deer.heading = Math.PI / 2;
+    deer.decisionTimer = 1;
+    updateWildlife([deer], 1, 1847, { x: 0, z: 0 }, () => 1, () => {});
+
+    expect(deer.geographic?.latitude).toBeCloseTo(60, 5);
+    expect(geographicDistanceMeters(origin, deer.geographic!)).toBeCloseTo(0.84, 5);
+    expect(isWildlifeState([deer])).toBe(true);
+    expect(isWildlifeState([{ ...deer, geographic: { ...deer.geographic!, longitude: 180 } }])).toBe(false);
   });
 });

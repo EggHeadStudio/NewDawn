@@ -1,6 +1,11 @@
-export const PLANET_WIDTH = 3072;
-export const PLANET_HEIGHT = 1536;
+import {
+  EARTH_RADIUS_METERS, geographicBearing, geographicDistanceMeters, geographicToLocal,
+  moveGeographic, normalizeLatitude, normalizeLongitude, regionIdForCoordinates, type GeographicPosition,
+} from './geography';
+
 export const CHUNK_SIZE = 24;
+export const PLANET_WIDTH = Math.round((2 * Math.PI * EARTH_RADIUS_METERS) / (CHUNK_SIZE * 2)) * CHUNK_SIZE * 2;
+export const PLANET_HEIGHT = PLANET_WIDTH / 2;
 export const GAMEPLAY_METERS_PER_UNIT = 1;
 export const LOCAL_PLANET_TILE_METERS = 24;
 
@@ -14,6 +19,59 @@ export function planetCoordinates(x: number, z: number) {
   const latitude = reflected ? PLANET_HEIGHT * 1.5 - phase : phase - PLANET_HEIGHT / 2;
   const longitude = modulo(x + (reflected ? PLANET_WIDTH / 2 : 0) + PLANET_WIDTH / 2, PLANET_WIDTH) - PLANET_WIDTH / 2;
   return { x: longitude, z: latitude, reflected };
+}
+
+export function planetPositionToGeographic(x: number, z: number, altitude = 0): GeographicPosition {
+  const point = planetCoordinates(x, z);
+  const latitude = point.z / PLANET_HEIGHT * 180;
+  const longitude = point.x / PLANET_WIDTH * 360;
+  return {
+    planetId: 'new-dawn-earth',
+    latitude,
+    longitude,
+    altitude,
+    regionId: regionIdForCoordinates(latitude, longitude),
+  };
+}
+
+export function geographicToPlanetPosition(latitude: number, longitude: number) {
+  return {
+    x: normalizeLongitude(longitude) / 360 * PLANET_WIDTH,
+    z: normalizeLatitude(latitude) / 180 * PLANET_HEIGHT,
+  };
+}
+
+export function planetDistanceMeters(a: { x: number; z: number }, b: { x: number; z: number }) {
+  return geographicDistanceMeters(
+    planetPositionToGeographic(a.x, a.z),
+    planetPositionToGeographic(b.x, b.z),
+  );
+}
+
+export function planetBearingDegrees(start: { x: number; z: number }, destination: { x: number; z: number }) {
+  return geographicBearing(planetPositionToGeographic(start.x, start.z), planetPositionToGeographic(destination.x, destination.z));
+}
+
+export function planetOffset(start: { x: number; z: number }, destination: { x: number; z: number }) {
+  const offset = geographicToLocal(
+    planetPositionToGeographic(start.x, start.z),
+    planetPositionToGeographic(destination.x, destination.z),
+  );
+  return { x: offset.x, z: -offset.z };
+}
+
+export function movePlanetPosition(
+  position: { x: number; z: number },
+  bearingDegrees: number,
+  distanceMeters: number,
+  origin = planetPositionToGeographic(position.x, position.z),
+) {
+  const geographic = moveGeographic(origin, bearingDegrees, distanceMeters);
+  const projected = geographicToPlanetPosition(geographic.latitude, geographic.longitude);
+  return {
+    ...nearestPlanetPosition(projected.x, projected.z, position.x, position.z),
+    geographic,
+  };
 }
 
 export function nearestPlanetPosition(x: number, z: number, referenceX: number, referenceZ: number) {

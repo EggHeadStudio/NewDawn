@@ -83,6 +83,8 @@ export class ConstructionRenderer {
   private roofOpacity = new Map<string, number>();
   private readonly matrix = new THREE.Matrix4();
   private readonly quaternion = new THREE.Quaternion();
+  private readonly occlusionPlayer = new THREE.Vector3();
+  private readonly occlusionCamera = new THREE.Vector3();
   private readonly position = new THREE.Vector3();
   private readonly scale = new THREE.Vector3();
 
@@ -218,7 +220,7 @@ export class ConstructionRenderer {
     }
   }
 
-  update(dt: number, player: THREE.Vector3, camera?: THREE.Vector3) {
+  update(dt: number, player: THREE.Vector3, camera?: THREE.Vector3, renderOrigin?: THREE.Vector3) {
     for (const { piece, mesh, index } of this.doors) {
       const current = this.angles.get(piece.id) ?? 0;
       const target = piece.open ? Math.PI / 2 : 0;
@@ -231,7 +233,13 @@ export class ConstructionRenderer {
     this.occlusionTimer -= dt;
     if (camera && this.occlusionTimer <= 0) {
       this.group.updateMatrixWorld(true);
-      this.occludedEdges = occludingPieces(this.edgeBatches, camera, player);
+      this.occlusionPlayer.copy(player);
+      this.occlusionCamera.copy(camera);
+      if (renderOrigin) {
+        this.occlusionPlayer.sub(renderOrigin);
+        this.occlusionCamera.sub(renderOrigin);
+      }
+      this.occludedEdges = occludingPieces(this.edgeBatches, this.occlusionCamera, this.occlusionPlayer);
       this.occlusionTimer = 0.1;
     }
     const nextOpacity = new Map<string, number>();

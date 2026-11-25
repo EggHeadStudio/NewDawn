@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { atlasBiomeAtCell, atlasBiomeColors } from '../src/atlas';
 
 async function save(page: Page) {
   await expect(page.locator('#pauseButton')).toBeVisible();
@@ -55,4 +56,22 @@ test('world atlas is usable in portrait and landscape viewports', async ({ page 
     await page.screenshot({ path: join(mobileFolder, viewport.width < viewport.height ? 'mobile-portrait-atlas.png' : 'mobile-landscape-atlas.png') });
     await page.locator('#closeAtlas').click();
   }
+});
+
+test('world atlas renders the generated biome for an explored geographic cell', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('./');
+  await page.locator('#newGame').click();
+  await page.keyboard.press('m');
+  await expect(page.locator('#atlasPanel')).toBeVisible();
+  const expectedColor = atlasBiomeColors[atlasBiomeAtCell(4, 4, 1847)];
+  const expected = expectedColor.match(/[0-9a-f]{2}/gi)!.map(value => Number.parseInt(value, 16));
+  const sample = await page.locator('#atlasCanvas').evaluate(canvas => {
+    const context = (canvas as HTMLCanvasElement).getContext('2d')!;
+    return [...context.getImageData(506, 248, 1, 1).data].slice(0, 3);
+  });
+  expect(sample).toEqual(expected);
+  const review = join('art-review', 'batch-005c');
+  await mkdir(review, { recursive: true });
+  await page.screenshot({ path: join(review, 'atlas-shared-world.png') });
 });

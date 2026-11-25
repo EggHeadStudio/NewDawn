@@ -1,10 +1,13 @@
 import * as THREE from 'three';
-import { CHUNK_SIZE, PLANET_HEIGHT, PLANET_WIDTH, nearestPlanetPosition, planetCoordinates, planetHeight } from './planet';
+import {
+  CHUNK_SIZE, PLANET_HEIGHT, PLANET_WIDTH, nearestPlanetPosition, planetCoordinates, planetDistanceMeters, planetHeight,
+} from './planet';
 import { depositKinds, requiresPickaxe, type DepositKind } from './economy';
 import { obstructingTrees } from './tree-occlusion';
 import { climateZone } from './geography';
 
 export type Biome = 'ocean' | 'beach' | 'grass' | 'forest' | 'rock' | 'desert' | 'snow';
+export type VegetationFamily = 'none' | 'deciduous' | 'conifer' | 'cactus';
 type Season = 'Spring' | 'Summer' | 'Autumn' | 'Winter';
 type Resource = 'wood' | 'stone' | 'food';
 type Chunk = { x: number; z: number; objects: THREE.Object3D[]; terrain: THREE.Mesh; baseColors: Float32Array };
@@ -38,12 +41,20 @@ export function biomeAt(x: number, z: number, seed: number): Biome {
   if (h < 0.45) return 'beach';
   if (Math.max(Math.abs(point.x), Math.abs(point.z)) > 72) {
     if (Math.abs(point.z) > PLANET_HEIGHT * 0.36 || h > 7) return 'snow';
-    const dry = Math.sin(point.x * Math.PI * 4 / 3072 + seed * 0.02) * Math.cos(point.z * Math.PI / PLANET_HEIGHT);
+    const dry = Math.sin(point.x * Math.PI * 4 / PLANET_WIDTH + seed * 0.02) * Math.cos(point.z * Math.PI / PLANET_HEIGHT);
     if (dry > 0.58 && Math.abs(point.z) < PLANET_HEIGHT * 0.22) return 'desert';
   }
   const n = seededNoise(Math.floor(point.x / 5), Math.floor(point.z / 5), seed);
   if (h > 4.4) return 'rock';
   return n > 0.48 ? 'forest' : 'grass';
+}
+
+export function vegetationFamilyAt(x: number, z: number, seed: number): VegetationFamily {
+  const biome = biomeAt(x, z, seed);
+  if (biome === 'desert') return 'cactus';
+  if (biome === 'snow') return 'conifer';
+  if (biome === 'forest') return Math.abs(planetCoordinates(x, z).z / PLANET_HEIGHT * 180) >= 45 ? 'conifer' : 'deciduous';
+  return 'none';
 }
 
 export function safeSpawn(seed: number) {
@@ -159,7 +170,7 @@ export class World {
       if (object.userData.resource !== 'wood') continue;
       object.children.forEach(child => {
         if (!(child instanceof THREE.Mesh) || !(child.material instanceof THREE.MeshStandardMaterial) || typeof child.userData.foliageTier !== 'number') return;
-        const colors = this.season === 'Autumn' ? ['#bb8a4e', '#a96b43', '#c39856']
+        const colors = this.season === 'Autumn' && object.userData.vegetationFamily !== 'conifer' ? ['#bb8a4e', '#a96b43', '#c39856']
           : this.season === 'Winter' ? ['#a6c1b6', '#789b91', '#cad8cd']
           : ['#4f8152', '#3f7350', '#668f55'];
         child.material.color.set(colors[child.userData.foliageTier]);
@@ -182,7 +193,7 @@ export class World {
       pos.setY(i, this.vertexHeight(x, z));
       const biome = biomeAt(x, z, this.seed);
       const geographic = planetCoordinates(x, z);
-      const latitude = geographic.z / PLANET_HEIGHT * 90;
+      const latitude = geographic.z / PLANET_HEIGHT * 180;
       const longitude = geographic.x / PLANET_WIDTH * 180;
       const climate = climateZone(latitude, pos.getY(i) * 100, 800, 0.5 + seededNoise(x, z, this.seed) * 0.35, this.seed);
       color.set(climate === 'polar-ice' ? '#d7e5df' : climate === 'tundra' ? '#9da98b'
@@ -271,10 +282,14 @@ export class World {
       const pz = z + (seededNoise(point.z, point.x, this.seed + 3) - 0.5) * (point.reflected ? -1 : 1);
       const h = legacy ? terrainHeight(px, pz, this.seed) : this.heightAt(px, pz);
       const biome = biomeAt(px, pz, this.seed);
+      const family = vegetationFamilyAt(px, pz, this.seed);
       let object: THREE.Object3D | undefined;
-      if (h > 0.35 && biome === 'forest' && seededNoise(point.x, point.z, this.seed + 8) > 0.42) {
+      if (h > 0.35 && (family === 'deciduous' || family === 'conifer')
+        && seededNoise(point.x, point.z, this.seed + 8) > (family === 'conifer' ? 0.52 : 0.42)) {
         const treePoint = planetCoordinates(px, pz);
-        object = this.tree(px, h, pz, treePoint.x, treePoint.z);
+        object = this.tree(px, h, pz, treePoint.x, treePoint.z, family);
+      } else if (h > 0.45 && family === 'cactus' && seededNoise(point.x, point.z, this.seed + 8) > 0.91) {
+        object = this.cactus(px, h, pz, point.x, point.z);
       } else if (h > 0.1 && biome !== 'ocean' && seededNoise(point.x + 4, point.z + 9, this.seed) > 0.76) {
         const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.25 + seededNoise(point.x, point.z, this.seed) * 0.45, 0),
           new THREE.MeshStandardMaterial({ color: '#7c8580', roughness: 1 }));
@@ -348,7 +363,7 @@ export class World {
     let distance = range;
     for (const object of this.group.children) {
       if (!object.userData.resource || (resource && object.userData.resource !== resource)) continue;
-      const d = Math.hypot(object.position.x - x, object.position.z - z);
+      const d = planetDistanceMeters(object.position, { x, z });
       if (d < distance) { distance = d; nearest = object; }
     }
     return nearest;
@@ -359,7 +374,7 @@ export class World {
     let distance = range;
     for (const object of this.group.children) {
       if (!object.userData.depositId) continue;
-      const d = Math.hypot(object.position.x - x, object.position.z - z);
+      const d = planetDistanceMeters(object.position, { x, z });
       if (d < distance) { distance = d; nearest = object; }
     }
     return nearest;
@@ -441,28 +456,53 @@ export class World {
     this.fadedTrees = obstructing;
   }
 
-  private tree(x: number, y: number, z: number, seedX: number, seedZ: number) {
+  private tree(x: number, y: number, z: number, seedX: number, seedZ: number, family: 'deciduous' | 'conifer') {
     const root = new THREE.Group();
     root.position.set(x, y, z);
     root.scale.setScalar(0.75 + seededNoise(seedX, seedZ, this.seed) * 0.65);
+    root.userData.vegetationFamily = family;
     const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.28, 1.5, 7),
       new THREE.MeshStandardMaterial({ color: '#806044', roughness: 1 }));
     trunk.position.y = 0.75;
     trunk.castShadow = true;
     root.add(trunk);
-    const crownColors = ['#4f8152', '#3f7350', '#668f55'];
-    const broadleaf = seededNoise(seedX + 2, seedZ - 5, this.seed) > 0.58;
+    const crownColors = family === 'conifer' ? ['#315a4b', '#39634e', '#416d53'] : ['#4f8152', '#3f7350', '#668f55'];
     for (let i = 0; i < 3; i++) {
-      const crown = new THREE.Mesh(broadleaf ? new THREE.IcosahedronGeometry(0.8 - i * 0.12, 1) : new THREE.ConeGeometry(0.95 - i * 0.12, 1.45, 7),
+      const crown = new THREE.Mesh(family === 'deciduous'
+        ? new THREE.IcosahedronGeometry(0.8 - i * 0.12, 1)
+        : new THREE.ConeGeometry(0.78 - i * 0.12, 1.55, 7),
         new THREE.MeshStandardMaterial({ color: crownColors[i], roughness: 0.9 }));
-      crown.position.y = 1.55 + i * 0.55;
-      if (broadleaf) crown.position.x = (i - 1) * 0.38;
+      crown.position.y = family === 'conifer' ? 1.25 + i * 0.58 : 1.55 + i * 0.55;
+      if (family === 'deciduous') crown.position.x = (i - 1) * 0.38;
       crown.userData.foliageTier = i;
       crown.castShadow = true;
       root.add(crown);
     }
     root.userData.resource = 'wood';
     return root;
+  }
+
+  private cactus(x: number, y: number, z: number, seedX: number, seedZ: number) {
+    const plant = new THREE.Group();
+    plant.position.set(x, y, z);
+    plant.scale.setScalar(0.75 + seededNoise(seedX, seedZ, this.seed) * 0.5);
+    plant.userData.vegetationFamily = 'cactus';
+    const material = new THREE.MeshStandardMaterial({ color: '#558653', roughness: 1 });
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.2, 1.45, 6), material);
+    stem.position.y = 0.72;
+    stem.castShadow = true;
+    plant.add(stem);
+    for (const side of [-1, 1]) {
+      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 0.4, 5), material);
+      arm.rotation.z = Math.PI / 2;
+      arm.position.set(side * 0.22, 0.65, 0);
+      plant.add(arm);
+      const branch = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 0.48, 5), material);
+      branch.position.set(side * 0.4, 0.88, 0);
+      branch.castShadow = true;
+      plant.add(branch);
+    }
+    return plant;
   }
 
   animate(time: number, wind: number) {

@@ -1,4 +1,6 @@
 import { biomeAt, seededNoise, terrainHeight } from './world';
+import { geographicBearing, geographicDistanceMeters, type GeographicPosition } from './geography';
+import { movePlanetPosition, planetDistanceMeters, planetPositionToGeographic, PLANET_WIDTH } from './planet';
 
 export type Species = 'deer' | 'rabbit' | 'wolf' | 'bird' | 'bear' | 'snake' | 'squirrel' | 'reindeer' | 'moose' | 'cow' | 'sheep' | 'fox';
 export type AnimalBehavior = 'wander' | 'rest' | 'flee' | 'chase' | 'fly';
@@ -7,6 +9,7 @@ export interface AnimalState {
   species: Species;
   x: number;
   z: number;
+  geographic?: GeographicPosition;
   homeX: number;
   homeZ: number;
   heading: number;
@@ -15,6 +18,19 @@ export interface AnimalState {
   decisionTimer: number;
   attackTimer: number;
   decisions: number;
+}
+type ActorPosition = { x: number; z: number; geographic?: GeographicPosition };
+
+function geographicPosition(position: ActorPosition) {
+  return position.geographic ?? planetPositionToGeographic(position.x, position.z);
+}
+
+function distanceBetween(a: ActorPosition, b: ActorPosition) {
+  return geographicDistanceMeters(geographicPosition(a), geographicPosition(b));
+}
+
+function bearingBetween(a: ActorPosition, b: ActorPosition) {
+  return geographicBearing(geographicPosition(a), geographicPosition(b));
 }
 
 const speciesCounts: Array<[Species, number]> = [
@@ -53,9 +69,10 @@ export function createWildlife(seed: number, spawn: { x: number; z: number }): A
         const x = Math.round((seededNoise(n + speciesOffset, 10, seed) - 0.5) * 80);
         const z = Math.round((seededNoise(n + speciesOffset, 20, seed) - 0.5) * 80);
         if (terrainHeight(x, z, seed) < 0.6 || !inHabitat(species, biomeAt(x, z, seed))) continue;
-        if (Math.hypot(x - spawn.x, z - spawn.z) < (species === 'wolf' ? 14 : 6)) continue;
+        if (planetDistanceMeters({ x, z }, spawn) < (species === 'wolf' ? 14 : 6)) continue;
         animals.push({
-          id: `${species}-${index}`, species, x, z, homeX: x, homeZ: z,
+          id: `${species}-${index}`, species, x, z, geographic: planetPositionToGeographic(x, z, terrainHeight(x, z, seed)),
+          homeX: x, homeZ: z,
           heading: seededNoise(n, 30, seed) * Math.PI * 2,
           health: maxHealth[species], behavior: 'wander', decisionTimer: 1, attackTimer: 0, decisions: 0,
         });
@@ -77,8 +94,18 @@ export function isWildlifeState(value: unknown): value is AnimalState[] {
       || typeof animal.behavior !== 'string' || !['wander', 'rest', 'flee', 'chase', 'fly'].includes(animal.behavior)) return false;
     ids.add(animal.id);
     if (!['x', 'z', 'homeX', 'homeZ', 'heading', 'health', 'decisionTimer', 'attackTimer', 'decisions'].every(key => typeof animal[key] === 'number' && Number.isFinite(animal[key]))) return false;
-    return Math.abs(animal.x as number) <= 48 && Math.abs(animal.z as number) <= 48
-      && Math.abs(animal.homeX as number) <= 48 && Math.abs(animal.homeZ as number) <= 48
+    const projectedPosition = { x: animal.x as number, z: animal.z as number };
+    if (animal.geographic !== undefined) {
+      const position = animal.geographic as Partial<GeographicPosition>;
+      if (typeof position !== 'object' || position === null || position.planetId !== 'new-dawn-earth'
+        || typeof position.latitude !== 'number' || !Number.isFinite(position.latitude) || position.latitude < -90 || position.latitude > 90
+        || typeof position.longitude !== 'number' || !Number.isFinite(position.longitude) || position.longitude < -180 || position.longitude >= 180
+        || typeof position.altitude !== 'number' || !Number.isFinite(position.altitude) || Math.abs(position.altitude) > 10000
+        || typeof position.regionId !== 'string' || position.regionId.length === 0 || position.regionId.length > 64
+        || geographicDistanceMeters(position as GeographicPosition, planetPositionToGeographic(projectedPosition.x, projectedPosition.z)) >= 1) return false;
+    }
+    return Math.abs(animal.x as number) <= PLANET_WIDTH * 2 && Math.abs(animal.z as number) <= PLANET_WIDTH * 2
+      && Math.abs(animal.homeX as number) <= PLANET_WIDTH * 2 && Math.abs(animal.homeZ as number) <= PLANET_WIDTH * 2
       && (animal.health as number) > 0 && (animal.health as number) <= maxHealth[animal.species as Species]
       && (animal.decisionTimer as number) >= 0 && (animal.attackTimer as number) >= 0
       && Number.isSafeInteger(animal.decisions) && (animal.decisions as number) >= 0;
@@ -86,36 +113,37 @@ export function isWildlifeState(value: unknown): value is AnimalState[] {
 }
 
 export function updateWildlife(
-  animals: AnimalState[], dt: number, seed: number, player: { x: number; z: number },
+  animals: AnimalState[], dt: number, seed: number, player: ActorPosition,
   heightAt: (x: number, z: number) => number,
   damagePlayer: (damage: number) => void,
 ) {
   for (const animal of animals) {
     if (animal.health <= 0) continue;
+    animal.geographic ??= planetPositionToGeographic(animal.x, animal.z);
     animal.attackTimer = Math.max(0, animal.attackTimer - dt);
     animal.decisionTimer = Math.max(0, animal.decisionTimer - dt);
-    const playerDistance = Math.hypot(player.x - animal.x, player.z - animal.z);
-    let target: { x: number; z: number } | undefined;
+    const playerDistance = distanceBetween(player, animal);
+    let target: ActorPosition | undefined;
     let flee = false;
     if (animal.species === 'wolf' || animal.species === 'fox' || animal.species === 'bear') {
       const prey = animals.filter(other => other.health > 0 && (
         animal.species === 'bear' ? ['deer', 'rabbit', 'sheep', 'squirrel'].includes(other.species)
           : ['deer', 'rabbit', 'sheep', 'squirrel'].includes(other.species)))
-        .sort((a, b) => Math.hypot(a.x - animal.x, a.z - animal.z) - Math.hypot(b.x - animal.x, b.z - animal.z))[0];
-      const preyDistance = prey ? Math.hypot(prey.x - animal.x, prey.z - animal.z) : Infinity;
+        .sort((a, b) => distanceBetween(animal, a) - distanceBetween(animal, b))[0];
+      const preyDistance = prey ? distanceBetween(animal, prey) : Infinity;
       if (playerDistance < 7) target = player;
-      else if (prey && preyDistance < 9 && Math.hypot(animal.x - animal.homeX, animal.z - animal.homeZ) < 18) target = prey;
+      else if (prey && preyDistance < 9 && distanceBetween(animal, { x: animal.homeX, z: animal.homeZ }) < 18) target = prey;
       if (target) {
         animal.behavior = 'chase';
-        const distance = Math.hypot(target.x - animal.x, target.z - animal.z);
+        const distance = distanceBetween(animal, target);
         if (distance < 1.1 && animal.attackTimer === 0) {
           if (target === player) damagePlayer(8);
           else if (prey) prey.health -= 1;
           animal.attackTimer = 2;
         }
-      } else if (Math.hypot(animal.x - animal.homeX, animal.z - animal.homeZ) > 12) target = { x: animal.homeX, z: animal.homeZ };
+      } else if (distanceBetween(animal, { x: animal.homeX, z: animal.homeZ }) > 12) target = { x: animal.homeX, z: animal.homeZ };
     } else {
-      const threat = animals.find(other => other.species === 'wolf' && other.health > 0 && Math.hypot(other.x - animal.x, other.z - animal.z) < 5);
+      const threat = animals.find(other => other.species === 'wolf' && other.health > 0 && distanceBetween(other, animal) < 5);
       if (playerDistance < 4 || threat) {
         target = playerDistance < 4 ? player : threat;
         flee = true;
@@ -130,13 +158,18 @@ export function updateWildlife(
       animal.decisionTimer = 2 + n * 4;
     }
     if (target) {
-      animal.heading = Math.atan2(target.x - animal.x, target.z - animal.z) + (flee ? Math.PI : 0);
+      animal.heading = bearingBetween(animal, target) * Math.PI / 180 + (flee ? Math.PI : 0);
     }
     if (animal.behavior !== 'rest') {
       const speed = speeds[animal.species] * (animal.behavior === 'wander' ? 0.35 : 1);
-      const x = Math.max(-46, Math.min(46, animal.x + Math.sin(animal.heading) * speed * dt));
-      const z = Math.max(-46, Math.min(46, animal.z + Math.cos(animal.heading) * speed * dt));
-      if (heightAt(x, z) > 0.1) { animal.x = x; animal.z = z; }
+      const next = movePlanetPosition(animal, animal.heading * 180 / Math.PI, speed * dt, animal.geographic);
+      if (distanceBetween(next, { x: animal.homeX, z: animal.homeZ }) > 46) {
+        animal.heading += Math.PI * 0.6;
+      } else if (heightAt(next.x, next.z) > 0.1) {
+        animal.x = next.x;
+        animal.z = next.z;
+        animal.geographic = { ...next.geographic, altitude: heightAt(next.x, next.z) };
+      }
       else animal.heading += Math.PI * 0.6;
     }
   }

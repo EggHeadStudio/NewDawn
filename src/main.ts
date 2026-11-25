@@ -1,10 +1,11 @@
 import * as THREE from 'three';
 import './style.css';
 import { World, safeSpawn, seededNoise } from './world';
+import { atlasBiomeAtCell, atlasBiomeColors } from './atlas';
 import { cameraRelativeMovement, clampCameraDistance, dampAngle, defaultCameraSettings } from './camera';
 import { buildingCosts, buildingRadius, canAfford, placementProblem, craftTool, isNight, spend, type BuildingKind, type Inventory, type Tool } from './gameplay';
 import { isSaveData } from './save';
-import { chooseNpcActivity, stepToward, type NpcJob, type NpcState } from './npc';
+import { chooseNpcActivity, type NpcJob, type NpcState } from './npc';
 import { areConnected, updatePower, type PowerNode } from './power';
 import { Effects, Precipitation } from './effects';
 import { seasonForDay, weatherForDay } from './calendar';
@@ -16,11 +17,14 @@ import { disposeCharacter } from './characters';
 import { attachAuthoredCharacter, updateAuthoredCharacter } from './authored-character';
 import { chooseEnemyKind, enemyIntent, enemyProfiles, stepEnemyProjectile, type EnemyKind } from './enemies';
 import { enterImmersiveMode, setupPwa, UPDATE_RESUME_KEY } from './pwa';
-import { nearestPlanetPosition, planetCoordinates, PLANET_HEIGHT, PLANET_WIDTH } from './planet';
+import {
+  geographicToPlanetPosition, movePlanetPosition, nearestPlanetPosition, planetCoordinates,
+  planetDistanceMeters, planetOffset, planetPositionToGeographic,
+} from './planet';
 import { connectionLayout, roadCosts, type RoadKind, type RoadSegment } from './roads';
 import { paintColors, type PaintPreset, type SurfacePaint } from './paint';
 import { climateZone, geographicDistanceMeters, hierarchicalTileId, regionIdForCoordinates,
-  seasonsForLatitude, type AtlasState, type MapMarker } from './geography';
+  geographicBearing, moveGeographic, seasonsForLatitude, transportBearing, type AtlasState, type GeographicPosition, type MapMarker } from './geography';
 import { rayIsObstructed, resolveActorMove, structuralPieceBlocks } from './physics';
 import { addPiece, FLOOR_HEIGHT, floorSurface, isEdgePiece, pieceBlocks, pieceCosts, removePiece, replacePiece, replacementProblem, replacementTarget, snapPiece, suggestFloorEdge, type PieceKind, type PieceRotation, type RoofStyle, type StructuralPiece } from './construction';
 import { reconcileRoof, reshapeRoof, type RoofAxis, type RoofRequest } from './roof';
@@ -286,6 +290,9 @@ scene.add(npc);
 const vehicle = createVehicle();
 vehicle.position.set(8, world.heightAt(8, 4), 4);
 scene.add(vehicle);
+let playerGeographic = planetPositionToGeographic(player.position.x, player.position.z, player.position.y);
+let vehicleGeographic = planetPositionToGeographic(vehicle.position.x, vehicle.position.z, vehicle.position.y);
+let npcGeographic = planetPositionToGeographic(npc.position.x, npc.position.z, npc.position.y);
 
 const resources: Resources = { wood: 0, stone: 0, food: 3, water: 3 };
 const mineralInventory = emptyMinerals();
@@ -392,6 +399,8 @@ let lastPointerUnlock = -Infinity;
 let movementBasis = cameraAngle;
 let previousInput = new THREE.Vector2();
 const cameraRay = new THREE.Raycaster();
+const renderOrigin = new THREE.Vector3();
+const cameraGlobalPosition = new THREE.Vector3();
 const cameraFocus = new THREE.Vector3();
 const cameraDesired = new THREE.Vector3();
 let cameraReady = false;
@@ -825,6 +834,7 @@ document.querySelector('#newGame')!.addEventListener('click', () => {
   characterName = (document.querySelector('#playerName') as HTMLInputElement).value.trim() || 'Survivor';
   npcAppearanceSeed = ((seed >>> 0) + 53917) >>> 0;
   resetWorld();
+  rebaseWorld();
   startGame();
 });
 document.querySelector('#continueGame')!.addEventListener('click', () => { enterImmersiveMode(); void loadGame(); });
@@ -1158,12 +1168,15 @@ function resetWorld() {
   const spawn = safeSpawn(seed)!;
   resetWildlife(createWildlife(seed, spawn));
   npc.position.set(spawn.x - 4, world.heightAt(spawn.x - 4, spawn.z - 3), spawn.z - 3);
+  npcGeographic = planetPositionToGeographic(npc.position.x, npc.position.z, npc.position.y);
   vehicle.position.set(spawn.x + 8, world.heightAt(spawn.x + 8, spawn.z - 1), spawn.z - 1);
+  vehicleGeographic = planetPositionToGeographic(vehicle.position.x, vehicle.position.z, vehicle.position.y);
   player = createCharacter(appearance);
   useAuthoredCharacter(player, appearance);
   handTorch = createHandTorch();
   attachHandTorch(player, handTorch.group);
   player.position.set(spawn.x, world.heightAt(spawn.x, spawn.z), spawn.z);
+  playerGeographic = planetPositionToGeographic(player.position.x, player.position.z, player.position.y);
   player.rotation.y = Math.PI + cameraAngle;
   scene.add(player);
   cameraReady = false;
@@ -1182,6 +1195,19 @@ function startGame() {
   preview = undefined;
   gameStarted = true;
   paused = false;
+  const focus = driving ? vehicle.position : player.position;
+  cameraFocus.set(focus.x, focus.y + (driving ? 1.9 : 1.8), focus.z);
+  const inRoom = !driving && Boolean(constructionRenderer.shelter.roomAt(focus.x, focus.y, focus.z));
+  const distance = Math.min(inRoom ? 6 : 24, cameraSettings.distance + (driving ? 2 : 0));
+  const horizontal = distance * Math.cos(cameraPitch);
+  cameraGlobalPosition.set(
+    cameraFocus.x + Math.sin(cameraAngle) * horizontal,
+    cameraFocus.y + distance * Math.sin(cameraPitch),
+    cameraFocus.z + Math.cos(cameraAngle) * horizontal,
+  );
+  camera.position.copy(cameraGlobalPosition).sub(renderOrigin);
+  camera.lookAt(cameraFocus.clone().sub(renderOrigin));
+  cameraReady = true;
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   document.querySelector('#menu')!.classList.remove('active');
   document.querySelector('#hud')!.classList.remove('hidden');
@@ -1266,7 +1292,7 @@ function terrainPoint(clientX: number, clientY: number) {
   const pointer = new THREE.Vector2((clientX - rect.left) / rect.width * 2 - 1, -(clientY - rect.top) / rect.height * 2 + 1);
   placementRay.setFromCamera(pointer, camera);
   const hit = world.intersectTerrain(placementRay);
-  return hit ? new THREE.Vector3(hit.x, hit.y, hit.z) : null;
+  return hit ? new THREE.Vector3(hit.x + renderOrigin.x, hit.y, hit.z + renderOrigin.z) : null;
 }
 
 let terrainApplyCooldown = 0;
@@ -1642,7 +1668,7 @@ function aimBuilding(clientX: number, clientY: number) {
   const point = world.intersectTerrain(placementRay);
   targetOnTerrain = Boolean(point);
   if (point) {
-    updateBuildTarget(point.x, point.z);
+    updateBuildTarget(point.x + renderOrigin.x, point.z + renderOrigin.z);
   }
   updatePlacement();
   return targetOnTerrain;
@@ -1777,7 +1803,7 @@ function throwStone() {
 
 function gather() {
   if (!gameStarted || gameplayBlocked() || driving || buildMode) return;
-  const enemy = enemies.find(item => item.position.distanceTo(player.position) < 2.8);
+  const enemy = enemies.find(item => worldDistance(item.position, player.position) < 2.8);
   if (enemy) {
     if (attackCooldown > 0) return;
     const toEnemy = enemy.position.clone().sub(player.position).setY(0);
@@ -1795,7 +1821,8 @@ function gather() {
     pendingMelee = { target: enemy, kind: 'enemy', damage: selectedWeapon === 'axe' ? 2 : selectedWeapon === 'stick' ? 1 : 1, time: 0.28 };
     return;
   }
-  const animal = wildlife.find(item => Math.hypot(item.x - player.position.x, item.z - player.position.z) < 2);
+  const animal = wildlife.find(item => geographicDistanceMeters(
+    item.geographic ?? planetPositionToGeographic(item.x, item.z), playerGeographic) < 2);
   if (animal) {
     if (attackCooldown > 0) return;
     if (rayIsObstructed(player.position.x, player.position.y + 1, player.position.z,
@@ -1811,7 +1838,7 @@ function gather() {
   }
   const deposit = world.findNearestDeposit(player.position.x, player.position.z, 3.2);
   const natural = world.findNearest(player.position.x, player.position.z, 3.2);
-  if (deposit && (!natural || deposit.position.distanceTo(player.position) < natural.position.distanceTo(player.position))) {
+  if (deposit && (!natural || planetDistanceMeters(deposit.position, player.position) < planetDistanceMeters(natural.position, player.position))) {
     if (attackCooldown > 0) return;
     const result = world.mineDeposit(deposit, tools.includes('pickaxe'));
     if (!result) return;
@@ -1858,7 +1885,7 @@ function updateObjective() {
 
 function nearestPost() {
   return buildingRecords.filter(isTorchPost)
-    .map(record => ({ record, distance: Math.hypot(record.x - player.position.x, record.z - player.position.z) }))
+    .map(record => ({ record, distance: planetDistanceMeters(record, player.position) }))
     .filter(candidate => candidate.distance < 2.5)
     .sort((a, b) => a.distance - b.distance)[0];
 }
@@ -1866,7 +1893,10 @@ function nearestPost() {
 function interact() {
   if (!gameStarted || gameplayBlocked() || buildMode) return;
   if (driving) {
-    player.position.copy(vehicle.position).add(new THREE.Vector3(2, 0, 0));
+    playerGeographic = moveGeographic(vehicleGeographic, 90, 2);
+    const exitPosition = projectGeographicPosition(playerGeographic, vehicle.position);
+    player.position.set(exitPosition.x, world.heightAt(exitPosition.x, exitPosition.z), exitPosition.z);
+    playerGeographic.altitude = player.position.y;
     scene.add(player);
     driving = false;
     vehicleSpeed = 0;
@@ -1879,14 +1909,14 @@ function interact() {
     return;
   }
   const door = structures.filter(piece => piece.kind === 'door' && Math.abs(piece.y - player.position.y) < 2)
-    .map(piece => ({ piece, distance: Math.hypot(piece.x - player.position.x, piece.z - player.position.z) }))
+    .map(piece => ({ piece, distance: planetDistanceMeters(piece, player.position) }))
     .filter(candidate => candidate.distance < 2.5)
     .sort((a, b) => a.distance - b.distance)[0];
   const smelter = buildingRecords.filter(record => record.kind === 'smelter')
-    .map(record => ({ record, distance: Math.hypot(record.x - player.position.x, record.z - player.position.z) }))
+    .map(record => ({ record, distance: planetDistanceMeters(record, player.position) }))
     .filter(candidate => candidate.distance < 3.2).sort((a, b) => a.distance - b.distance)[0];
   const post = nearestPost();
-  if (door && door.distance <= Math.min(vehicle.position.distanceTo(player.position), npc.position.distanceTo(player.position), smelter?.distance ?? Infinity, post?.distance ?? Infinity)) {
+  if (door && door.distance <= Math.min(worldDistance(vehicle.position, player.position), worldDistance(npc.position, player.position), smelter?.distance ?? Infinity, post?.distance ?? Infinity)) {
     if (door.piece.open && pieceBlocks({ ...door.piece, open: false }, player.position.x, player.position.y, player.position.z)) {
       toast('Step out of the doorway first');
       return;
@@ -1896,20 +1926,21 @@ function interact() {
     void saveGame(false);
     return;
   }
-  if (post && post.distance <= Math.min(vehicle.position.distanceTo(player.position), npc.position.distanceTo(player.position), smelter?.distance ?? Infinity)) {
+  if (post && post.distance <= Math.min(worldDistance(vehicle.position, player.position), worldDistance(npc.position, player.position), smelter?.distance ?? Infinity)) {
     if (!togglePostFlame(post.record, torch)) { toast('Equip and ignite your torch first'); return; }
     postLightTimer = 0;
     toast(post.record.lit ? 'Torch post lit' : 'Torch post extinguished');
     void saveGame(false);
     return;
   }
-  if (smelter && smelter.distance <= Math.min(vehicle.position.distanceTo(player.position), npc.position.distanceTo(player.position))) {
+  if (smelter && smelter.distance <= Math.min(worldDistance(vehicle.position, player.position), worldDistance(npc.position, player.position))) {
     releasePointerLock();
     activeSmelter = smelter.record;
     refreshSmelter();
     clearMovement();
     document.querySelector('#smelterPanel')!.classList.remove('hidden');
-  } else if (vehicle.position.distanceTo(player.position) < 3.2) {
+  } else if (worldDistance(vehicle.position, player.position) < 3.2) {
+    playerGeographic = { ...vehicleGeographic };
     scene.remove(player);
     driving = true;
     vehicleSpeed = 0;
@@ -1919,7 +1950,7 @@ function interact() {
     document.querySelector('#actionA span')!.textContent = 'Drive';
     document.querySelector('#actionB span')!.textContent = 'Brake';
     toast('Driving rover');
-  } else if (npc.position.distanceTo(player.position) < 3) {
+  } else if (worldDistance(npc.position, player.position) < 3) {
     releasePointerLock();
     refreshNpcPanel();
     clearMovement();
@@ -1952,9 +1983,8 @@ function toast(message: string) {
 function showMap() {
   if (!gameStarted || gameplayBlocked()) return;
   releasePointerLock();
-  const point = planetCoordinates(player.position.x, player.position.z);
-  atlasState.centerLatitude = point.z / PLANET_HEIGHT * 90;
-  atlasState.centerLongitude = point.x / PLANET_WIDTH * 180;
+  atlasState.centerLatitude = playerGeographic.latitude;
+  atlasState.centerLongitude = playerGeographic.longitude;
   const tile = hierarchicalTileId(atlasState.centerLatitude, atlasState.centerLongitude, 4);
   if (!atlasState.explored.includes(tile)) atlasState.explored.push(tile);
   document.querySelector('#atlasPanel')!.classList.remove('hidden');
@@ -1963,9 +1993,7 @@ function showMap() {
 }
 
 function atlasPosition() {
-  const point = planetCoordinates(player.position.x, player.position.z);
-  return { latitude: point.z / PLANET_HEIGHT * 90, longitude: point.x / PLANET_WIDTH * 180,
-    altitude: world.heightAt(player.position.x, player.position.z) };
+  return { ...playerGeographic, altitude: world.heightAt(player.position.x, player.position.z) };
 }
 
 function drawAtlas() {
@@ -1983,6 +2011,7 @@ function drawAtlas() {
   const zoom = atlasState.zoom;
   const viewWidth = 360 / zoom;
   const viewHeight = 180 / zoom;
+  const exploredTiles = new Set(atlasState.explored);
   const project = (latitude: number, longitude: number) => ({
     x: ((longitude - (atlasState.centerLongitude - viewWidth / 2)) / viewWidth) * width,
     y: ((atlasState.centerLatitude + viewHeight / 2 - latitude) / viewHeight) * height,
@@ -1992,37 +2021,22 @@ function drawAtlas() {
   ctx.beginPath();
   ctx.rect(0, 0, width, height);
   ctx.clip();
-  for (let latIndex = -90; latIndex < 90; latIndex += 2) {
-    for (let lonIndex = -180; lonIndex < 180; lonIndex += 2) {
-      const longitude = lonIndex + 1;
-      const latitude = latIndex + 1;
+  for (let latIndex = -90; latIndex < 90; latIndex++) {
+    for (let lonIndex = -180; lonIndex < 180; lonIndex++) {
+      const longitude = lonIndex + 0.5;
+      const latitude = latIndex + 0.5;
       if (longitude < atlasState.centerLongitude - viewWidth / 2 - 2
         || longitude > atlasState.centerLongitude + viewWidth / 2 + 2
         || latitude < atlasState.centerLatitude - viewHeight / 2 - 2
         || latitude > atlasState.centerLatitude + viewHeight / 2 + 2) continue;
-      const continental = Math.sin(longitude * 0.047 + seed * 0.013) * Math.cos(latitude * 0.031)
-        + Math.sin(longitude * 0.018 - latitude * 0.055 + seed * 0.027) * 0.7;
-      const altitude = 900 + continental * 520;
-      const moisture = 0.5 + Math.cos(latitude * 0.04 + seed * 0.01) * 0.25
-        + Math.sin(longitude * 0.09 + seed) * 0.12;
-      const zone = climateZone(latitude, altitude, longitude > -30 && longitude < 30 ? 40 : 800, moisture, seed);
       const tile = hierarchicalTileId(latitude, longitude, 4);
-      const explored = atlasState.explored.includes(tile);
+      const explored = exploredTiles.has(tile);
       if (!explored) continue;
       const point = project(latitude, longitude);
-      const sizeX = width / viewWidth * 2.2;
-      const sizeY = height / viewHeight * 2.2;
-      if (continental > -0.28) {
-        const colors: Record<string, string> = {
-          'polar-ice': '#dce5df', tundra: '#9da98b', alpine: '#7f8176', boreal: '#58745b',
-          'temperate-deciduous': '#728d52', 'temperate-mixed': '#66875b', grassland: '#9baa64',
-          steppe: '#b1a66d', savanna: '#b09b5f', 'hot-desert': '#c5a66f', 'cold-desert': '#aaa184',
-          'tropical-rainforest': '#356c48', 'tropical-seasonal': '#66824a', wetland: '#5c8067',
-          coastal: '#c1b875',
-        };
-        ctx.fillStyle = colors[zone];
-        ctx.fillRect(point.x - sizeX / 2, point.y - sizeY / 2, sizeX, sizeY);
-      }
+      const sizeX = width / viewWidth * 1.1;
+      const sizeY = height / viewHeight * 1.1;
+      ctx.fillStyle = atlasBiomeColors[atlasBiomeAtCell(latIndex, lonIndex, seed)];
+      ctx.fillRect(point.x - sizeX / 2, point.y - sizeY / 2, sizeX, sizeY);
     }
   }
   ctx.restore();
@@ -2157,7 +2171,10 @@ function damagePlayer(damage: number, message: string) {
   animationActionTime = 0.45;
   if (health === 0) {
     const spawn = safeSpawn(seed);
-    if (spawn) player.position.set(spawn.x, world.heightAt(spawn.x, spawn.z), spawn.z);
+    if (spawn) {
+      player.position.set(spawn.x, world.heightAt(spawn.x, spawn.z), spawn.z);
+      playerGeographic = planetPositionToGeographic(spawn.x, spawn.z, player.position.y);
+    }
     health = 100;
     toast('You were rescued and returned to camp');
   } else toast(message);
@@ -2271,30 +2288,32 @@ function projectWorldEntities() {
   if (structuresChanged) constructionRenderer.refresh(structures, surfacePaint);
 }
 
+function projectGeographicPosition(position: GeographicPosition, reference: THREE.Vector3) {
+  const projected = geographicToPlanetPosition(position.latitude, position.longitude);
+  return nearestPlanetPosition(projected.x, projected.z, reference.x, reference.z);
+}
+
+function worldDistance(a: THREE.Vector3, b: THREE.Vector3) {
+  return Math.hypot(planetDistanceMeters(a, b), a.y - b.y);
+}
+
+function transportCameraAngle(angle: number, start: GeographicPosition, destination: GeographicPosition) {
+  const bearing = transportBearing(start, destination, THREE.MathUtils.radToDeg(angle));
+  return THREE.MathUtils.degToRad(bearing);
+}
+
+function transportCharacterYaw(yaw: number, start: GeographicPosition, destination: GeographicPosition) {
+  const bearing = transportBearing(start, destination, THREE.MathUtils.radToDeg(yaw));
+  return THREE.MathUtils.degToRad(bearing);
+}
+
 function rebaseWorld() {
-  const dx = Math.abs(player.position.x) > PLANET_WIDTH * 2
-    ? -Math.trunc(player.position.x / PLANET_WIDTH) * PLANET_WIDTH : 0;
-  const dz = Math.abs(player.position.z) > PLANET_HEIGHT * 2
-    ? -Math.trunc(player.position.z / (PLANET_HEIGHT * 2)) * PLANET_HEIGHT * 2 : 0;
-  if (!dx && !dz) return;
-  const shift = (object: THREE.Object3D) => { object.position.x += dx; object.position.z += dz; };
-  [player, npc, vehicle, ...buildings, ...enemies].forEach(shift);
-  enemyProjectiles.forEach(projectile => shift(projectile.mesh));
-  if (buildGhost) shift(buildGhost);
-  buildTarget.x += dx;
-  buildTarget.z += dz;
-  buildAim.x += dx;
-  buildAim.y += dz;
-  buildingRecords.forEach(record => { record.x += dx; record.z += dz; });
-  structures.forEach(piece => { piece.x += dx; piece.z += dz; });
-  constructionRenderer.refresh(structures, surfacePaint);
-  camera.position.x += dx;
-  camera.position.z += dz;
-  cameraFocus.x += dx;
-  cameraFocus.z += dz;
-  effects.shift(dx, dz);
-  world.rebase(dx, dz);
-  updatePowerLines();
+  renderOrigin.set(
+    Math.trunc(player.position.x / 1024) * 1024,
+    0,
+    Math.trunc(player.position.z / 1024) * 1024,
+  );
+  scene.position.set(-renderOrigin.x, 0, -renderOrigin.z);
 }
 
 function updateGame(dt: number) {
@@ -2309,7 +2328,7 @@ function updateGame(dt: number) {
         if (enemies.includes(enemy)) {
           const blocked = rayIsObstructed(player.position.x, player.position.y + 1, player.position.z,
             enemy.position.x, enemy.position.y + 1, enemy.position.z, structures, buildingRecords);
-          if (!blocked && enemy.position.distanceTo(player.position) <= 2.8) {
+          if (!blocked && worldDistance(enemy.position, player.position) <= 2.8) {
             enemy.userData.health = (enemy.userData.health as number) - pending.damage;
             enemy.userData.hurtAnimation = 0.35;
             effects.burst(enemy.position, 'damage');
@@ -2326,7 +2345,8 @@ function updateGame(dt: number) {
         if (wildlife.includes(animal)) {
           const blocked = rayIsObstructed(player.position.x, player.position.y + 1, player.position.z,
             animal.x, world.heightAt(animal.x, animal.z) + 1, animal.z, structures, buildingRecords);
-          if (!blocked && Math.hypot(animal.x - player.position.x, animal.z - player.position.z) <= 2.2) {
+          if (!blocked && geographicDistanceMeters(
+            animal.geographic ?? planetPositionToGeographic(animal.x, animal.z), playerGeographic) <= 2.2) {
             animal.health -= pending.damage;
             effects.burst(new THREE.Vector3(animal.x, world.heightAt(animal.x, animal.z), animal.z), 'damage');
             if (animal.health <= 0) {
@@ -2408,20 +2428,31 @@ function updateGame(dt: number) {
     if (Math.abs(vehicleSpeed) > 0.1) vehicle.rotation.y -= inputX * Math.sign(vehicleSpeed) * 1.5 * dt;
     const dx = Math.cos(vehicle.rotation.y);
     const dz = -Math.sin(vehicle.rotation.y);
-    const nextX = vehicle.position.x + dx * vehicleSpeed * dt;
-    const nextZ = vehicle.position.z + dz * vehicleSpeed * dt;
+    const headingBearing = Math.atan2(dx, dz) * 180 / Math.PI;
+    let transportedHeading = headingBearing;
+    const travelBearing = headingBearing + (vehicleSpeed < 0 ? 180 : 0);
+    const oldVehicleGeographic = vehicleGeographic;
+    const nextGeographic = moveGeographic(oldVehicleGeographic, travelBearing, Math.abs(vehicleSpeed) * dt);
+    const nextPosition = projectGeographicPosition(nextGeographic, vehicle.position);
+    const nextX = nextPosition.x;
+    const nextZ = nextPosition.z;
     const blocked = buildingRecords.some(b => Math.hypot(nextX - b.x, nextZ - b.z) < (b.kind === 'shelter' ? 2.4 : 1.8))
       || structures.some(piece => pieceBlocks(piece, nextX, vehicle.position.y, nextZ, 1));
     if (!blocked && world.heightAt(nextX, nextZ) > -0.5) {
       vehicle.position.x = nextX;
       vehicle.position.z = nextZ;
+      vehicle.position.y = world.heightAt(nextX, nextZ);
+      vehicleGeographic = { ...nextGeographic, altitude: vehicle.position.y };
+      transportedHeading = transportBearing(oldVehicleGeographic, nextGeographic, headingBearing);
+      vehicle.rotation.y = THREE.MathUtils.degToRad(transportedHeading) - Math.PI / 2;
+      cameraAngle = transportCameraAngle(cameraAngle, oldVehicleGeographic, nextGeographic);
+      movementBasis = transportCameraAngle(movementBasis, oldVehicleGeographic, nextGeographic);
     } else vehicleSpeed = 0;
-    vehicle.position.y = world.heightAt(vehicle.position.x, vehicle.position.z);
     const wheels = vehicle.userData.wheels as THREE.Mesh[];
     wheels.forEach(wheel => wheel.rotateY(vehicleSpeed * dt / 0.32));
     document.querySelector('#vehicleIndicator')!.textContent = `SPEED ${Math.abs(vehicleSpeed).toFixed(1)}`;
     if (cameraSettings.autoFollow && Math.abs(vehicleSpeed) > 0.15 && performance.now() > manualCameraUntil) {
-      cameraAngle = dampAngle(cameraAngle, Math.atan2(-dx, -dz), 2.2, dt);
+      cameraAngle = dampAngle(cameraAngle, THREE.MathUtils.degToRad(transportedHeading) + Math.PI, 2.2, dt);
     }
     previousInput.set(0, 0);
   } else if (length > 0.08) {
@@ -2436,21 +2467,29 @@ function updateGame(dt: number) {
     const dx = direction.x;
     const dz = direction.y;
     const target = player;
-    const nextX = target.position.x + dx * speed * dt;
-    const nextZ = target.position.z + dz * speed * dt;
+    const moveBearing = Math.atan2(dx, dz) * 180 / Math.PI;
+    const nextGeographic = moveGeographic(playerGeographic, moveBearing, speed * Math.min(1, length) * dt);
+    const nextPosition = projectGeographicPosition(nextGeographic, target.position);
+    const nextX = nextPosition.x;
+    const nextZ = nextPosition.z;
     const collides = buildingRecords.some(b => Math.hypot(nextX - b.x, nextZ - b.z) < (b.kind === 'shelter' ? 2 : b.kind === 'storage' ? 1.6 : 1))
       || structures.some(piece => pieceBlocks(piece, nextX, target.position.y, nextZ));
     if (!collides && world.heightAt(nextX, nextZ) > -0.5) {
       target.position.x = nextX;
       target.position.z = nextZ;
+      const oldGeographic = playerGeographic;
+      const transportedMoveBearing = transportBearing(oldGeographic, nextGeographic, moveBearing);
+      cameraAngle = transportCameraAngle(cameraAngle, oldGeographic, nextGeographic);
+      movementBasis = transportCameraAngle(movementBasis, oldGeographic, nextGeographic);
+      target.rotation.y = dampAngle(transportCharacterYaw(target.rotation.y, oldGeographic, nextGeographic),
+        THREE.MathUtils.degToRad(transportedMoveBearing), 10, dt);
+      playerGeographic = { ...nextGeographic, altitude: world.heightAt(nextX, nextZ) };
       actualMovement = length;
+      if (!buildMode && document.pointerLockElement !== canvas && cameraSettings.autoFollow && performance.now() > manualCameraUntil) {
+        cameraAngle = dampAngle(cameraAngle, THREE.MathUtils.degToRad(transportedMoveBearing) + Math.PI, 2.2, dt);
+      }
     }
     if (grounded) target.position.y = floorSurface(structures, target.position.x, target.position.z, target.position.y, world.heightAt(target.position.x, target.position.z));
-    const heading = Math.atan2(dx, dz);
-    target.rotation.y = dampAngle(target.rotation.y, heading, 10, dt);
-    if (!buildMode && document.pointerLockElement !== canvas && cameraSettings.autoFollow && performance.now() > manualCameraUntil) {
-      cameraAngle = dampAngle(cameraAngle, Math.atan2(-dx, -dz), 2.2, dt);
-    }
   } else previousInput.set(0, 0);
 
   if (!driving) {
@@ -2478,15 +2517,18 @@ function updateGame(dt: number) {
 
   if (driving) {
     player.position.copy(vehicle.position).add(new THREE.Vector3(0, 1, 0));
+    playerGeographic = { ...vehicleGeographic };
   }
   rebaseWorld();
   world.updateChunks(player.position.x, player.position.z);
   projectWorldEntities();
-  constructionRenderer.update(dt, player.position, camera.position);
+  constructionRenderer.update(dt, player.position, cameraGlobalPosition, renderOrigin);
 
   const elapsed = performance.now();
   updateNpc(dt);
-  updateWildlife(wildlife, dt, seed, player.position, (x, z) => world.heightAt(x, z), damage => {
+  updateWildlife(wildlife, dt, seed, {
+    x: player.position.x, z: player.position.z, geographic: playerGeographic,
+  }, (x, z) => world.heightAt(x, z), damage => {
     if (!driving) damagePlayer(damage, 'A wolf attacked!');
   });
   updateAnimalModels(elapsed);
@@ -2538,12 +2580,13 @@ function updateGame(dt: number) {
     enemy.userData.attackAnimation = Math.max(0, (enemy.userData.attackAnimation as number) - dt);
     enemy.userData.hurtAnimation = Math.max(0, (enemy.userData.hurtAnimation as number) - dt);
     const direction = player.position.clone().sub(enemy.position).setY(0);
-    const enemyDistance = direction.length();
+    const horizontalDistance = direction.length();
+    const enemyDistance = worldDistance(enemy.position, player.position);
     const intent = enemyIntent(kind, enemyDistance, enemy.userData.attackTimer === 0);
     let walking = 0;
     const enemyCanSee = !rayIsObstructed(enemy.position.x, enemy.position.y + 1, enemy.position.z,
       player.position.x, player.position.y + 1, player.position.z, structures, buildingRecords);
-    if (enemyDistance > 0 && enemyDistance < 18 && enemyCanSee) {
+    if (horizontalDistance > 0 && enemyDistance < 18 && enemyCanSee) {
       direction.normalize();
       const next = enemy.position.clone().addScaledVector(direction, dt * profile.speed * intent.movement);
       const resolved = resolveActorMove(enemy.position.x, enemy.position.z, next.x, next.z, enemy.position.y, structures, buildingRecords, 0.35);
@@ -2596,7 +2639,7 @@ function updateGame(dt: number) {
   const rayDirection = cameraDesired.clone().sub(cameraFocus);
   const rayLength = rayDirection.length();
   rayDirection.normalize();
-  cameraRay.set(cameraFocus, rayDirection);
+  cameraRay.set(cameraFocus.clone().sub(renderOrigin), rayDirection);
   cameraRay.far = rayLength;
   const buildingHit = cameraRay.intersectObjects(buildings, true)[0];
   if (buildingHit && buildingHit.distance > 0.3) cameraDesired.copy(cameraFocus).addScaledVector(rayDirection, Math.max(0.5, buildingHit.distance - 0.35));
@@ -2611,10 +2654,11 @@ function updateGame(dt: number) {
   }
   const cameraGround = world.heightAt(cameraDesired.x, cameraDesired.z) + 0.7;
   cameraDesired.y = Math.max(cameraDesired.y, cameraGround);
-  camera.position.lerp(cameraDesired, 1 - Math.exp(-cameraSettings.smoothing * dt));
-  camera.position.y = Math.max(camera.position.y, world.heightAt(camera.position.x, camera.position.z) + 0.5);
-  camera.lookAt(cameraFocus);
-  world.updateTreeOcclusion(camera.position, focus);
+  cameraGlobalPosition.lerp(cameraDesired, 1 - Math.exp(-cameraSettings.smoothing * dt));
+  cameraGlobalPosition.y = Math.max(cameraGlobalPosition.y, world.heightAt(cameraGlobalPosition.x, cameraGlobalPosition.z) + 0.5);
+  camera.position.copy(cameraGlobalPosition).sub(renderOrigin);
+  camera.lookAt(cameraFocus.clone().sub(renderOrigin));
+  world.updateTreeOcclusion(cameraGlobalPosition, focus);
 
   animateCharacter(player, dt, actualMovement, keys.has('ShiftLeft'), animationActionTime > 0 ? animationAction : undefined);
   attachHandTorch(player, handTorch.group);
@@ -2630,7 +2674,7 @@ function updateGame(dt: number) {
     buildings.forEach((building, index) => {
       const record = buildingRecords[index];
       if (!isTorchPost(record)) return;
-      const visible = Math.hypot(record.x - player.position.x, record.z - player.position.z) < renderDistance * 24 + 12;
+      const visible = planetDistanceMeters(record, player.position) < renderDistance * 24 + 12;
       building.visible = visible;
       const fire = building.getObjectByName('post-flame');
       if (fire) fire.visible = visible && record.lit;
@@ -2650,10 +2694,10 @@ function updateGame(dt: number) {
   if (!driving && !buildMode) {
     const post = nearestPost();
     const closestDoor = structures.filter(piece => piece.kind === 'door' && Math.abs(piece.y - player.position.y) < 2)
-      .reduce((distance, piece) => Math.min(distance, Math.hypot(piece.x - player.position.x, piece.z - player.position.z)), Infinity);
+      .reduce((distance, piece) => Math.min(distance, planetDistanceMeters(piece, player.position)), Infinity);
     const closestSmelter = buildingRecords.filter(record => record.kind === 'smelter')
-      .reduce((distance, record) => Math.min(distance, Math.hypot(record.x - player.position.x, record.z - player.position.z)), Infinity);
-    const nearby = post && post.distance < Math.min(closestDoor, closestSmelter, vehicle.position.distanceTo(player.position), npc.position.distanceTo(player.position));
+      .reduce((distance, record) => Math.min(distance, planetDistanceMeters(record, player.position)), Infinity);
+    const nearby = post && post.distance < Math.min(closestDoor, closestSmelter, worldDistance(vehicle.position, player.position), worldDistance(npc.position, player.position));
     const hint = nearby ? (post.record.lit ? 'Extinguish torch' : 'Light torch') : 'Interact';
     document.querySelector('#actionB span')!.textContent = hint;
     updateCameraHint(nearby ? hint : undefined);
@@ -2719,14 +2763,15 @@ function updatePowerLines() {
 
 function updateNpc(dt: number) {
   const storage = buildings.find(b => b.userData.building === 'storage');
-  const threat = enemies.find(enemy => enemy.position.distanceTo(npc.position) < 6);
+  const threat = enemies.find(enemy => worldDistance(enemy.position, npc.position) < 6);
   const activity = chooseNpcActivity(npcState, Boolean(storage), Boolean(threat));
   let destination: THREE.Vector3 | undefined;
   if (activity === 'gathering' && npcState.job !== 'idle') {
     const target = world.findNearest(npc.position.x, npc.position.z, 40, npcState.job);
     if (target) {
       destination = target.position;
-      if (Math.hypot(npc.position.x - target.position.x, npc.position.z - target.position.z) < 1.3) {
+      if (geographicDistanceMeters(npcGeographic,
+        planetPositionToGeographic(target.position.x, target.position.z)) < 1.3) {
         const found = world.gatherNearest(npc.position.x, npc.position.z, 1.4, npcState.job);
         if (found && found.resource !== 'food') {
           npcState.carrying = found.resource;
@@ -2737,7 +2782,8 @@ function updateNpc(dt: number) {
     }
   } else if (activity === 'delivering' && storage) {
     destination = storage.position;
-    if (Math.hypot(npc.position.x - storage.position.x, npc.position.z - storage.position.z) < 2) {
+    if (geographicDistanceMeters(npcGeographic,
+      planetPositionToGeographic(storage.position.x, storage.position.z)) < 2) {
       if (npcState.carrying) resources[npcState.carrying] += npcState.carrying === 'wood' ? 3 : 2;
       npcState.carrying = null;
       destination = undefined;
@@ -2756,20 +2802,30 @@ function updateNpc(dt: number) {
     npc.add(parcel);
   } else if (!npcState.carrying && cargo) { npc.remove(cargo); disposeCharacter(cargo); }
   if (destination) {
-    const next = stepToward(npc.position, destination, 1.6, dt);
-    const blocker = buildingRecords.find(b => Math.hypot(next.x - b.x, next.z - b.z) < 1.65 && Math.hypot(destination!.x - b.x, destination!.z - b.z) > 2);
+    const destinationPosition = { x: destination.x, z: destination.z };
+    const destinationGeographic = planetPositionToGeographic(destinationPosition.x, destinationPosition.z);
+    const bearing = THREE.MathUtils.radToDeg(geographicBearing(npcGeographic, destinationGeographic));
+    const remaining = geographicDistanceMeters(npcGeographic, destinationGeographic);
+    const next = movePlanetPosition(npc.position, bearing, Math.min(remaining, 1.6 * dt), npcGeographic);
+    const blocker = buildingRecords.find(b => geographicDistanceMeters(next.geographic,
+      planetPositionToGeographic(b.x, b.z)) < 1.65
+      && geographicDistanceMeters(destinationGeographic, planetPositionToGeographic(b.x, b.z)) > 2);
     if (blocker) {
-      const dx = npc.position.x - blocker.x;
-      const dz = npc.position.z - blocker.z;
-      const tangent = new THREE.Vector3(-dz, 0, dx).normalize();
-      npc.position.addScaledVector(tangent, dt * 1.6);
+      const offset = planetOffset(blocker, npc.position);
+      const tangentBearing = Math.atan2(-offset.z, offset.x) * 180 / Math.PI;
+      const tangentStep = movePlanetPosition(npc.position, tangentBearing, dt * 1.6);
+      npc.position.x = tangentStep.x;
+      npc.position.z = tangentStep.z;
+      npcGeographic = planetPositionToGeographic(npc.position.x, npc.position.z, npc.position.y);
     } else if (!structures.some(piece => pieceBlocks(piece, next.x, npc.position.y, next.z))) {
       npc.position.x = next.x;
       npc.position.z = next.z;
+      npcGeographic = next.geographic;
     }
-    npc.rotation.y = dampAngle(npc.rotation.y, Math.atan2(destination.x - npc.position.x, destination.z - npc.position.z), 8, dt);
+    npc.rotation.y = dampAngle(npc.rotation.y, THREE.MathUtils.degToRad(bearing), 8, dt);
   }
   npc.position.y = world.heightAt(npc.position.x, npc.position.z);
+  npcGeographic = { ...npcGeographic, altitude: npc.position.y };
   npc.userData.workTimer = Math.max(0, ((npc.userData.workTimer as number | undefined) ?? 0) - dt);
   animateCharacter(npc, dt, destination ? 1 : 0, false, npc.userData.workTimer > 0 ? (npcState.job === 'stone' ? 'mine' : 'chop') : undefined, Boolean(npcState.carrying) && npc.userData.workTimer === 0, npc.userData.workTimer as number);
 }
@@ -2935,7 +2991,7 @@ async function saveGame(notify: boolean) {
     const db = await openDatabase();
     const tx = db.transaction('saves', 'readwrite');
     tx.objectStore('saves').put({
-      version: 11,
+      version: 12,
       seed,
       outfit,
       appearance: { ...appearance },
@@ -2943,6 +2999,11 @@ async function saveGame(notify: boolean) {
       npcAppearanceSeed,
       wildlife: wildlife.map(animal => ({ ...animal })),
       player: { x: player.position.x, y: player.position.y, z: player.position.z },
+      planetPositions: {
+        player: { ...playerGeographic, altitude: world.heightAt(player.position.x, player.position.z) },
+        vehicle: { ...vehicleGeographic, altitude: world.heightAt(vehicle.position.x, vehicle.position.z) },
+        npc: { ...npcGeographic, altitude: world.heightAt(npc.position.x, npc.position.z) },
+      },
       npc: { x: npc.position.x, z: npc.position.z },
       resources,
       buildings: buildingRecords,
@@ -3074,6 +3135,19 @@ async function loadGame() {
         });
         backupDb.close();
       }
+      if (saved.version < 12) {
+        const backupDb = await openDatabase();
+        const backupTx = backupDb.transaction('saves', 'readwrite');
+        const store = backupTx.objectStore('saves');
+        const existing = store.get('pre-geographic-movement-backup');
+        existing.onsuccess = () => { if (!existing.result) store.put(saved, 'pre-geographic-movement-backup'); };
+        await new Promise<void>((resolve, reject) => {
+          backupTx.oncomplete = () => resolve();
+          backupTx.onerror = () => reject(backupTx.error);
+          backupTx.onabort = () => reject(backupTx.error ?? new Error('Geographic movement backup transaction aborted'));
+        });
+        backupDb.close();
+      }
       const save = saved;
       seed = save.seed;
       outfit = save.outfit;
@@ -3093,13 +3167,25 @@ async function loadGame() {
       Object.assign(torch, save.torch ?? { crafted: false, equipped: false, lit: false });
       stones = save.stones ?? 0;
       selectedWeapon = save.selectedWeapon ?? 'fists';
-      world.updateChunks(save.player.x, save.player.z, true);
+      playerGeographic = save.version >= 12 && save.planetPositions
+        ? { ...save.planetPositions.player }
+        : planetPositionToGeographic(save.player.x, save.player.z, save.player.y ?? 0);
+      const savedPlayerPosition = projectGeographicPosition(playerGeographic, new THREE.Vector3(save.player.x, 0, save.player.z));
+      vehicleGeographic = save.version >= 12 && save.planetPositions
+        ? { ...save.planetPositions.vehicle }
+        : planetPositionToGeographic(save.vehicle.x, save.vehicle.z);
+      const savedVehiclePosition = projectGeographicPosition(vehicleGeographic, new THREE.Vector3(save.vehicle.x, 0, save.vehicle.z));
+      npcGeographic = save.version >= 12 && save.planetPositions?.npc
+        ? { ...save.planetPositions.npc }
+        : planetPositionToGeographic(save.npc.x, save.npc.z);
+      const savedNpcPosition = projectGeographicPosition(npcGeographic, new THREE.Vector3(save.npc.x, 0, save.npc.z));
+      world.updateChunks(savedPlayerPosition.x, savedPlayerPosition.z, true);
       world.restore(save.terrain);
       world.restoreDepleted(save.depleted ?? []);
       world.restoreMining(save.version >= 8 ? (save.mining ?? {}) : {});
-      player.position.set(save.player.x, world.heightAt(save.player.x, save.player.z), save.player.z);
-      npc.position.set(save.npc.x, world.heightAt(save.npc.x, save.npc.z), save.npc.z);
-      vehicle.position.set(save.vehicle.x, world.heightAt(save.vehicle.x, save.vehicle.z), save.vehicle.z);
+      player.position.set(savedPlayerPosition.x, world.heightAt(savedPlayerPosition.x, savedPlayerPosition.z), savedPlayerPosition.z);
+      npc.position.set(savedNpcPosition.x, world.heightAt(savedNpcPosition.x, savedNpcPosition.z), savedNpcPosition.z);
+      vehicle.position.set(savedVehiclePosition.x, world.heightAt(savedVehiclePosition.x, savedVehiclePosition.z), savedVehiclePosition.z);
       gameMinutes = save.calendar.minute;
       day = save.calendar.day;
       gameSpeed = save.calendar.speed ?? 2.2;
@@ -3141,6 +3227,7 @@ async function loadGame() {
         player.position.y = floorSurface(structures, player.position.x, player.position.z, save.player.y, world.heightAt(player.position.x, player.position.z));
       }
       updatePowerLines();
+      rebaseWorld();
       startGame();
       updateResources();
       updateObjective();

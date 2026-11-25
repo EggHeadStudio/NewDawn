@@ -5,10 +5,12 @@ Runtime environment geometry is original and procedural. Authored character asse
 ## Nature
 - Streamed procedural terrain with original starter region, broad continental forms, and desert and polar/snow colors
 - Conifer and broadleaf tree silhouettes with seasonal foliage
+- Latitude-selected deciduous and evergreen conifer families, plus sparse low-poly cactus geometry in generated arid regions
 - Instanced grass and flowers
 - Dodecahedron rocks
 - Berry bushes
 - Ocean, beach, grass, forest, rock, desert and snow biome colors; no authored rivers or water-travel assets yet
+- The World Atlas uses a cached one-degree raster of generated world biomes; current exploration fog and coarse raster resolution are visible limitations
 
 ## Characters
 - Player, seeded NPC and raider: Quaternius Universal Base Characters Standard, Modular Character Outfits - Fantasy Standard, and Universal Animation Library Standard. The specific archives each include a CC0 1.0 license; their license texts are retained alongside the files in `public/assets/characters/quaternius/`. Source pages: [base characters](https://quaternius.itch.io/universal-base-characters), [fantasy outfits](https://quaternius.itch.io/modular-character-outfits-fantasy), and [animations](https://quaternius.itch.io/universal-animation-library). Models and animations are by Quaternius; the animation page also credits Gonzalo Furnier.

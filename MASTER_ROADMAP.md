@@ -73,7 +73,7 @@ Provide excellent mouse/keyboard and touch controls, contextual A/B actions, pra
 
 ## Current priority
 
-Batch 004B order: finish pitched/irregular roofs, automatic retry and shelter; then dark nights and torches; wildlife; independent settlements; production, trade and local reputation; governance and diplomacy; and rover damage, roads, boats and manufacturing. Retain the unfinished mining-to-manufacturing and research loop, authored-character foundation and documented art requirements.
+Batch 005C is in progress. Player, rover, Mira and wildlife now use great-circle movement; canonical positions persist for player/rover and optionally Mira/animals. The Atlas samples the generated world biome source, and streamed vegetation has initial latitude-aware forest families and desert cactus. Projected x/z remains the rendering/collision frame. Next complete and test a shared local-tangent entity/render transform across terrain, structures and collision before bounded hierarchical terrain LOD. Continue environment visuals and other approved 005C vertical slices without claiming planet acceptance. Preserve the unfinished mining-to-manufacturing and research loop, authored-character limitations, and all documented art requirements.
 
 ## Batch 004C permanent requirements
 

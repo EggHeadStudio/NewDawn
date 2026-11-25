@@ -1,4 +1,24 @@
-# Test report — Batch 005B gameplay physics checkpoint
+# Test report — Batch 005C geographic movement checkpoint
+
+## Batch 005C subsequent planetary integration slice
+
+- Focused Vitest run: **42 tests passed** across geography, world, wildlife, save and Atlas suites. This includes canonical great-circle actor movement across the antimeridian and at high latitude, optional Mira/wildlife geographic save-state validation, biome-family selection and streamed cactus generation.
+- `npm.cmd run build`: TypeScript and production build passed. The main bundle is about 814 kB minified; the existing Vite chunk-size warning remains.
+- Microsoft Edge Playwright: **3 targeted tests passed**. Mira moved at high latitude and retained canonical position across reload; an Atlas canvas pixel matched the generated-world biome sample; and a seeded desert region streamed procedural cactus geometry.
+- Captured and reviewed actual browser screenshots: [atlas-shared-world.png](art-review/batch-005c/atlas-shared-world.png) and [arid-vegetation-gameplay.png](art-review/batch-005c/arid-vegetation-gameplay.png). The Atlas shows only explored cells and remains visibly coarse. The desert screenshot confirms cactus geometry is present, while terrain and vegetation remain simplified.
+- The previous full Edge suite remains 47/47 **before** this slice; no full regression rerun or physical-device testing has been performed after these changes.
+- Still incomplete: a shared local-tangent transform for terrain, structures, collision and rendering; full dynamic/static entity integration; LOD, worker generation, global biome and weather acceptance, both-pole runtime journeys, and ocean traversal. Batch 005C is not complete.
+
+## Batch 005C partial implementation checkpoint
+
+- `npm.cmd test`: **106 tests passed** in 25 files. Coverage includes great-circle movement and heading transport, ECEF/tangent round-trips, high-latitude metric distances, save validation/migration, remote chunk streaming and terrain-edit persistence, resource range queries, seam-aware power links, and construction occlusion with a translated render origin.
+- `npm.cmd run build`: TypeScript validation and production build passed; the main bundle is about 812 kB minified and Vite retains its existing bundle-size warning.
+- Microsoft Edge Playwright: **47/47 passed** in 12.7 minutes. Coverage includes the antimeridian settlement journey and a 60°-latitude travel/save/reload scenario that drives the rover, walks the player, and verifies persisted canonical positions against measured geographic distances. Browser emulation is not physical-device testing.
+- Captured an actual noon gameplay screenshot at [antimeridian-gameplay.png](art-review/batch-005c/antimeridian-gameplay.png). It verifies the distant render origin displays the player and streamed terrain; it also shows the current simplified terrain/vegetation quality, not a graphics acceptance pass.
+- Version 12 saves persist canonical player and vehicle geography alongside projected coordinates. Versions 1–11 remain loadable from their existing projected positions, with a pre-geographic-movement backup before migration.
+- Still incomplete: a runtime local-tangent transform across terrain, structures, NPCs, wildlife and collision; both-pole gameplay acceptance; hierarchical LOD; worker generation; ocean travel; and the full 005C graphics, wildlife, physics, construction and UI acceptance gates. The 005C batch is **not complete**.
+
+## Batch 005B gameplay physics checkpoint
  
 ## Batch 005B partial implementation checkpoint
 

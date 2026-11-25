@@ -11,10 +11,11 @@ import type { RoofAxis, RoofRequest } from './roof';
 import { isTorchState, type TorchState } from './fire';
 import { isSurfacePaint, type SurfacePaint } from './paint';
 import type { RoadSegment } from './roads';
-import { isAtlasState, type AtlasState } from './geography';
+import { geographicDistanceMeters, isAtlasState, type AtlasState, type GeographicPosition } from './geography';
+import { PLANET_WIDTH, planetPositionToGeographic } from './planet';
 
 export interface SaveData {
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
   seed: number;
   outfit: Outfit;
   appearance?: CharacterAppearance;
@@ -47,6 +48,7 @@ export interface SaveData {
   tools?: Tool[];
   calendar: { minute: number; day: number; speed?: number };
   vehicle: { x: number; z: number };
+  planetPositions?: { player: GeographicPosition; vehicle: GeographicPosition; npc?: GeographicPosition };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -55,25 +57,46 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function isNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
-function isPosition(value: unknown, limit: number) {
+function isPosition(value: unknown, limit: number): value is Record<string, unknown> & { x: number; z: number } {
   return isObject(value) && isNumber(value.x) && isNumber(value.z)
     && Math.abs(value.x) <= limit && Math.abs(value.z) <= limit;
 }
 
+function isGeographicPosition(value: unknown): value is GeographicPosition {
+  return isObject(value) && value.planetId === 'new-dawn-earth'
+    && isNumber(value.latitude) && value.latitude >= -90 && value.latitude <= 90
+    && isNumber(value.longitude) && value.longitude >= -180 && value.longitude < 180
+    && isNumber(value.altitude) && Math.abs(value.altitude) <= 10000
+    && typeof value.regionId === 'string' && value.regionId.length > 0 && value.regionId.length <= 64;
+}
+
+function matchesProjectedPosition(value: GeographicPosition, position: unknown) {
+  if (!isPosition(position, PLANET_WIDTH * 2)) return false;
+  return geographicDistanceMeters(value, planetPositionToGeographic(position.x, position.z)) < 1;
+}
+
 export function isSaveData(value: unknown): value is SaveData {
-  if (!isObject(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4 && value.version !== 5 && value.version !== 6 && value.version !== 7 && value.version !== 8 && value.version !== 9 && value.version !== 10 && value.version !== 11)
+  if (!isObject(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4 && value.version !== 5 && value.version !== 6 && value.version !== 7 && value.version !== 8 && value.version !== 9 && value.version !== 10 && value.version !== 11 && value.version !== 12)
     || !isNumber(value.seed) || !safeSpawn(value.seed) || !['ember', 'sage', 'azure'].includes(String(value.outfit))
-    || !isPosition(value.player, value.version >= 6 ? 10000000 : 48)
-    || !isPosition(value.npc, value.version >= 6 ? 10000000 : 48)
-    || !isPosition(value.vehicle, value.version >= 6 ? 10000000 : 48)
+    || !isPosition(value.player, value.version >= 6 ? PLANET_WIDTH * 2 : 48)
+    || !isPosition(value.npc, value.version >= 6 ? PLANET_WIDTH * 2 : 48)
+    || !isPosition(value.vehicle, value.version >= 6 ? PLANET_WIDTH * 2 : 48)
     || !isObject(value.resources) || !isObject(value.terrain) || !isObject(value.calendar)
     || !Array.isArray(value.buildings)) return false;
+  if (value.planetPositions !== undefined) {
+    const positions = value.planetPositions;
+    if (!isObject(positions) || !isGeographicPosition(positions.player) || !isGeographicPosition(positions.vehicle)
+      || (positions.npc !== undefined && (!isGeographicPosition(positions.npc)
+        || (value.version >= 12 && !matchesProjectedPosition(positions.npc as GeographicPosition, value.npc))))
+      || (value.version >= 12 && (!matchesProjectedPosition(positions.player, value.player)
+        || !matchesProjectedPosition(positions.vehicle, value.vehicle)))) return false;
+  } else if (value.version >= 12) return false;
   if (!['wood', 'stone', 'food', 'water'].every(k => isNumber(value.resources && (value.resources as Record<string, unknown>)[k]) && ((value.resources as Record<string, number>)[k] >= 0))) return false;
   if (!isNumber(value.calendar.minute) || value.calendar.minute < 0 || value.calendar.minute >= 1440
     || !isNumber(value.calendar.day) || value.calendar.day < 1
     || (value.calendar.speed !== undefined && (!isNumber(value.calendar.speed) || value.calendar.speed < 0.5 || value.calendar.speed > 8))) return false;
   if (!Object.entries(value.terrain).every(([key, n]) => /^-?\d+,-?\d+$/.test(key) && isNumber(n) && n >= -1.8 && n <= 0)) return false;
-  const coordinateLimit = value.version >= 6 ? 10000000 : 48;
+  const coordinateLimit = value.version >= 6 ? PLANET_WIDTH * 2 : 48;
   const version = value.version;
   if (!value.buildings.every(b => isObject(b) && typeof b.kind === 'string'
     && Object.hasOwn(buildingCosts, b.kind) && isPosition(b, coordinateLimit) && isNumber(b.y) && isNumber(b.rotation)
