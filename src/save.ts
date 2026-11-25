@@ -11,9 +11,10 @@ import type { RoofAxis, RoofRequest } from './roof';
 import { isTorchState, type TorchState } from './fire';
 import { isSurfacePaint, type SurfacePaint } from './paint';
 import type { RoadSegment } from './roads';
+import { isAtlasState, type AtlasState } from './geography';
 
 export interface SaveData {
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
   seed: number;
   outfit: Outfit;
   appearance?: CharacterAppearance;
@@ -33,6 +34,9 @@ export interface SaveData {
   terrain: Record<string, number>;
   roads?: RoadSegment[];
   paint?: SurfacePaint[];
+  atlas?: AtlasState;
+  stones?: number;
+  selectedWeapon?: 'fists' | 'stick' | 'axe' | 'stones';
   depleted?: string[];
   minerals?: MineralInventory;
   mining?: Record<string, number>;
@@ -57,7 +61,7 @@ function isPosition(value: unknown, limit: number) {
 }
 
 export function isSaveData(value: unknown): value is SaveData {
-  if (!isObject(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4 && value.version !== 5 && value.version !== 6 && value.version !== 7 && value.version !== 8 && value.version !== 9 && value.version !== 10)
+  if (!isObject(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4 && value.version !== 5 && value.version !== 6 && value.version !== 7 && value.version !== 8 && value.version !== 9 && value.version !== 10 && value.version !== 11)
     || !isNumber(value.seed) || !safeSpawn(value.seed) || !['ember', 'sage', 'azure'].includes(String(value.outfit))
     || !isPosition(value.player, value.version >= 6 ? 10000000 : 48)
     || !isPosition(value.npc, value.version >= 6 ? 10000000 : 48)
@@ -143,6 +147,11 @@ export function isSaveData(value: unknown): value is SaveData {
     if (value.version >= 10 && (!Array.isArray(value.paint) || value.paint.length > 10000
       || !value.paint.every(isSurfacePaint))) return false;
   }
+  if (value.atlas !== undefined) {
+    if (value.version >= 11 && !isAtlasState(value.atlas)) return false;
+  }
+  if (value.stones !== undefined && (!isNumber(value.stones) || !Number.isInteger(value.stones) || value.stones < 0 || value.stones > 100000)) return false;
+  if (value.selectedWeapon !== undefined && !['fists', 'stick', 'axe', 'stones'].includes(String(value.selectedWeapon))) return false;
   if (value.version >= 8 && (!isMineralInventory(value.minerals) || !isIngots(value.ingots, value.version >= 9)
     || typeof value.ironPickaxe !== 'boolean'
     || (value.ironPickaxe && (!Array.isArray(value.tools) || !value.tools.includes('pickaxe')))

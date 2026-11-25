@@ -60,7 +60,7 @@ test('migrates version 8 economy without granting glass and preserves a backup',
     minerals: { ironOre: 5, sand: 3, coal: 2 }, mining: { '4,6': 2 } });
   expect(backup.ingots.glass).toBeUndefined();
   await save(page);
-  expect(await readRecord(page, 'primary')).toMatchObject({ version: 10, ingots: { iron: 4, copper: 2, glass: 0 },
+  expect(await readRecord(page, 'primary')).toMatchObject({ version: 11, ingots: { iron: 4, copper: 2, glass: 0 },
     minerals: { ironOre: 5, sand: 3, coal: 2 }, mining: { '4,6': 2 } });
 });
 
@@ -106,16 +106,17 @@ test('preserves a legacy settlement and walks beyond the old island', async ({ p
   for (let attempt = 0; attempt < 15 && x <= 54; attempt++) {
     await page.waitForTimeout(2000);
     await page.keyboard.press('m');
-    const text = await page.locator('#toast').innerText();
-    const match = /Local map: (-?\d+), (-?\d+)/.exec(text);
-    if (match) x = Number(match[1]);
+    const text = await page.locator('#atlasCoordinates').innerText();
+    const match = /LON (-?\d+(?:\.\d+)?)°/.exec(text);
+    if (match) x = Number(match[1]) / 180 * 3072;
+    await page.keyboard.press('Escape');
   }
   await page.keyboard.up('s');
   await page.keyboard.up('Shift');
   expect(x).toBeGreaterThan(54);
   await save(page);
   const traveled = await readRecord(page, 'primary');
-  expect(traveled).toMatchObject({ version: 10, resources: { wood: 17 }, terrain: { '-6,-6': -0.35 },
+  expect(traveled).toMatchObject({ version: 11, resources: { wood: 17 }, terrain: { '-6,-6': -0.35 },
     npcState: { recruited: true }, buildings: [{ kind: 'storage', x: -10, z: -10 }] });
   expect(traveled.player.x).toBeGreaterThan(48);
   await page.reload();
@@ -162,8 +163,10 @@ test('crosses the longitude seam and retains a nearby settlement', async ({ page
   for (let attempt = 0; attempt < 8 && longitude >= 0; attempt++) {
     await page.waitForTimeout(1000);
     await page.keyboard.press('m');
-    const match = /Local map: (-?\d+), (-?\d+)/.exec(await page.locator('#toast').innerText());
-    if (match) longitude = Number(match[1]);
+    const text = await page.locator('#atlasCoordinates').innerText();
+    const match = /LON (-?\d+(?:\.\d+)?)°/.exec(text);
+    if (match) longitude = Number(match[1]) / 180 * 3072;
+    await page.keyboard.press('Escape');
   }
   await page.keyboard.up('d');
   await page.keyboard.up('Shift');

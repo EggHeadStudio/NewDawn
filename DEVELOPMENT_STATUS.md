@@ -1,4 +1,22 @@
-# Development status — Batch 004C partial checkpoint
+# Development status — Batch 005B partial checkpoint
+
+## Batch 005B — in progress
+
+- Added a unified lightweight collision/query module for player, vehicle and enemy movement, structural pieces and line-of-sight/attack obstruction. Open doors permit movement and sight; walls, glazed windows and solid roofs block passage or attacks. It is not Rapier-backed and does not provide full rigid-body/triangle-mesh physics.
+- Enemy pursuit now stops at solid structures and melee/ranged attacks require unobstructed sight. Melee damage is delayed until a validated attack contact window.
+- Added jumping, gravity, landing and basic water immersion/swimming state. Swimming and jump animations remain limited and are not final Ragdoll/athletic animation acceptance.
+- Added throwable stones, weapon state, collectible stone inventory and a compact tool hub; weapon state persists in save fields. Bare fists, stick, axe and stones are real selectors, with thrown stones following ballistic motion and collision.
+- Removed normal road shoulder/ring connection lines and retained continuous material planes. Full road curves, grading, crossroad and rover-height acceptance remains open.
+- Mobile HUD now uses a compact 3-button quickbar plus expandable tool hub while preserving joystick and A/B. Desktop still has compact compatibility controls.
+- Gable, paint, building power distribution and premium animal/character work remain incomplete. No full ragdoll or complete animal art acceptance is claimed.
+
+## Batch 005A — in progress
+
+- Added an Earth-scale geographic foundation using a 6,371-km-radius sphere, 40,030-km equatorial circumference, latitude/longitude normalization, haversine distance, great-circle bearing and forward movement, pole-safe tangent conversion and hierarchical region/tile IDs.
+- Added a functional World Atlas: M and the Atlas quick control open an illustrated canvas map with World/Continent/Region/Local scale selection, pan, zoom, explored-region fog, named persistent markers and straight-line route estimates.
+- Connected hemispheric-season and geography-aware weather selection to the gameplay loop; polar/tundra and hot-desert biome families affect weather and terrain tinting in the first implementation slice.
+- Version 11 saves optional atlas explored-tile and marker state. Version 1–10 worlds receive a browser-local `pre-planet-engine-backup`. The complete stable Edge suite passes 44/44 tests.
+- This is **not a complete Earth-scale planet**. The existing Three.js world still uses the legacy 3,072 by 1,536-unit local projection and 24-unit chunks. It does not yet provide real 40-million-meter gameplay traversal, workers, hierarchical LOD, a full continent generator or marine simulation. The atlas is connected to canonical latitude/longitude utilities but distant terrain and civilization visual acceptance remain unfinished.
 
 ## Batch 004C — in progress
 

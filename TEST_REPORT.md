@@ -1,4 +1,25 @@
-# Test report — Batch 004B-R2 partial checkpoint
+# Test report — Batch 005B gameplay physics checkpoint
+ 
+## Batch 005B partial implementation checkpoint
+
+- `npm.cmd test`: 99 tests pass in 25 files, including wall/door/line-of-sight collision coverage.
+- `npm.cmd run build`: production build passes after physics, jump/swim, stone throwing and compact tool-hub integration.
+- `npx.cmd playwright test physics.e2e.ts`: desktop and mobile tool-hub, jump and contextual weapon-control tests pass.
+- Final stable Edge run: **46/46 passed** in 12.9 minutes on stable source, including the 2 new physics tests and all existing construction, touch, fire, mining, atlas and world regressions.
+- Implemented: player/vehicle/enemy structure collision, open-door passage, wall/window/roof attack obstruction, contact-timed melee, ballistic stones, jump/gravity, water immersion state and a compact mobile tool hub. [Desktop tool hub](art-review/batch-005b/desktop-tool-hub.png) and [mobile tool hub](art-review/batch-005b/mobile-tool-hub.png) screenshots were captured.
+- Not verified or incomplete: full Rapier rigid-body simulation, complete AI routefinding, fall/ragdoll, premium animal rework, true UV texture painting, building-level power graph, complete roof/foundation and road grading acceptance, and physical-device testing.
+
+## Batch 005A planetary foundation checkpoint
+
+- Stable baseline unit run: 90 tests passed in 23 files before planetary-source edits. The subsequent geography/atlas implementation run: 97 tests pass in 24 files.
+- Final stable Edge run: **44/44 passed** in 15.9 minutes, including 2 new atlas tests, all existing building/construction/touch, fire, mining, seam and save/migration coverage.
+- `npm.cmd run build`: production build passes after Earth-scale geography, climate and atlas integration. Vite retains the existing main-bundle-size warning.
+- Added geography tests for Earth radius/circumference, longitude wrapping, pole crossing, great-circle bearing, local tangent conversion and opposite hemispheric seasons.
+- Added two Edge atlas browser tests: desktop marker add/zoom/save/reload and portrait/landscape viewport visibility. Both pass.
+- The baseline full Edge run was stopped after edits began, so this checkpoint does not claim a complete 42/42 stable rerun. Existing suite failures observed during the interrupted baseline were reproducible construction/touch instability and not yet attributable to a stable source result.
+- Implemented at this checkpoint: canonical geographic utilities, hierarchical tile IDs, climate-zone helpers, geographic-season/weather adaptation, terrain climate tinting and a save-persistent World Atlas.
+- Captured actual atlas screenshots in `art-review/batch-005a/`: desktop, mobile portrait and mobile landscape. These validate atlas UI rendering, not global terrain or physical-device quality.
+- Not implemented or claimed: Earth-scale long-distance player travel, worker generation, hierarchical LOD, ocean/continent high-detail streaming, rivers/caves, full terrain materials, real terrain screenshots, physical-device atlas checks or civilization/political overlays.
 
 ## Batch 004C partial implementation checkpoint
 

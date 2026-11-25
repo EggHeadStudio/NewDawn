@@ -80,6 +80,7 @@ test('builds a room through the interface and reshapes its paid roof', async ({ 
         data.resources.wood = 100;
         data.ingots.glass = 1;
         data.calendar.minute = 720;
+        data.wildlife = [];
         store.put(data, 'primary');
       };
       tx.oncomplete = () => { db.close(); resolve(); };

@@ -82,3 +82,11 @@ Batch 004B order: finish pitched/irregular roofs, automatic retry and shelter; t
 - Roads: provide dirt, gravel, stone and future advanced road materials, automatic segments/intersections, grading and rover/NPC navigation compatibility.
 - Building customization: provide per-surface color and material presets, normalized freehand strokes, eraser and undo/redo, bounded paint storage and stable piece-ID persistence.
 - Graphics/UI: provide persisted fog and draw-distance controls, device-sensitive quality presets, professional tool modes and responsive safe-area layouts.
+
+## Batch 005A permanent requirements
+
+- Planet engine: use a 6,371-km-radius Earth model with 40,030-km equatorial scale for canonical geographic calculations, local floating origins and one-meter world positions.
+- World streaming: support hierarchical coarse/medium/high-detail tiles, bounded caches, worker generation, seamless LOD stitching and canonical tile-persistent modifications.
+- Geography/climate: add deterministic continents and oceans, latitudinal/elevation climate zones, hemispheric seasons, geographic weather compatibility and biome-dependent terrain vegetation.
+- Atlas: provide World/Continent/Region/Local scales, pan/zoom, explored fog of war, markers, route estimates and future real settlement/political overlays.
+- Ecology: bind wildlife habitats to climate and biome, with marine/freshwater and future civilization ecosystems.

@@ -152,7 +152,8 @@ for (const viewport of viewports) {
       await expect(page.locator('#cameraDistance')).toBeVisible();
       await page.locator('#resumeGame').click();
       await page.locator('#minimap').click();
-      await expect(page.locator('#toast')).toContainText('Local map:');
+      await expect(page.locator('#atlasPanel')).toBeVisible();
+      await page.locator('#closeAtlas').click();
 
       await page.locator('[data-tool="build"]').click();
       await expect(page.locator('#buildPanel')).toBeVisible();
@@ -377,7 +378,8 @@ test.describe('touch camera gestures', () => {
     await page.locator('[data-job="wood"]').click();
     await page.locator('#closeNpc').click();
     await page.locator('#minimap').click();
-    await expect(page.locator('#toast')).toContainText('Local map:');
+    await expect(page.locator('#atlasPanel')).toBeVisible();
+    await page.locator('#closeAtlas').click();
     await save(page);
     const afterNpc = await readSave(page);
     expect(afterNpc.npcState).toMatchObject({ recruited: true, job: 'wood' });

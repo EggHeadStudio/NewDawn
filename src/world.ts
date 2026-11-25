@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { CHUNK_SIZE, PLANET_HEIGHT, nearestPlanetPosition, planetCoordinates, planetHeight } from './planet';
+import { CHUNK_SIZE, PLANET_HEIGHT, PLANET_WIDTH, nearestPlanetPosition, planetCoordinates, planetHeight } from './planet';
 import { depositKinds, requiresPickaxe, type DepositKind } from './economy';
 import { obstructingTrees } from './tree-occlusion';
+import { climateZone } from './geography';
 
 export type Biome = 'ocean' | 'beach' | 'grass' | 'forest' | 'rock' | 'desert' | 'snow';
 type Season = 'Spring' | 'Summer' | 'Autumn' | 'Winter';
@@ -180,8 +181,17 @@ export class World {
       const z = pos.getZ(i);
       pos.setY(i, this.vertexHeight(x, z));
       const biome = biomeAt(x, z, this.seed);
-      color.set(biome === 'ocean' ? '#287b86' : biome === 'beach' ? '#d8c58a' : biome === 'rock' ? '#718084'
-        : biome === 'snow' ? '#d7e5df' : biome === 'desert' ? '#d1b877' : biome === 'forest' ? '#4d7d51' : '#70a65a');
+      const geographic = planetCoordinates(x, z);
+      const latitude = geographic.z / PLANET_HEIGHT * 90;
+      const longitude = geographic.x / PLANET_WIDTH * 180;
+      const climate = climateZone(latitude, pos.getY(i) * 100, 800, 0.5 + seededNoise(x, z, this.seed) * 0.35, this.seed);
+      color.set(climate === 'polar-ice' ? '#d7e5df' : climate === 'tundra' ? '#9da98b'
+        : climate === 'hot-desert' || climate === 'cold-desert' ? '#d1b877'
+        : climate === 'alpine' ? '#718084'
+        : climate === 'tropical-rainforest' ? '#356c48'
+        : climate === 'boreal' ? '#58745b'
+        : biome === 'ocean' ? '#287b86' : biome === 'beach' ? '#d8c58a'
+        : biome === 'forest' ? '#4d7d51' : '#70a65a');
       colors.push(color.r, color.g, color.b);
     }
     geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));

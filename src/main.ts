@@ -19,6 +19,9 @@ import { enterImmersiveMode, setupPwa, UPDATE_RESUME_KEY } from './pwa';
 import { nearestPlanetPosition, planetCoordinates, PLANET_HEIGHT, PLANET_WIDTH } from './planet';
 import { connectionLayout, roadCosts, type RoadKind, type RoadSegment } from './roads';
 import { paintColors, type PaintPreset, type SurfacePaint } from './paint';
+import { climateZone, geographicDistanceMeters, hierarchicalTileId, regionIdForCoordinates,
+  seasonsForLatitude, type AtlasState, type MapMarker } from './geography';
+import { rayIsObstructed, resolveActorMove, structuralPieceBlocks } from './physics';
 import { addPiece, FLOOR_HEIGHT, floorSurface, isEdgePiece, pieceBlocks, pieceCosts, removePiece, replacePiece, replacementProblem, replacementTarget, snapPiece, suggestFloorEdge, type PieceKind, type PieceRotation, type RoofStyle, type StructuralPiece } from './construction';
 import { reconcileRoof, reshapeRoof, type RoofAxis, type RoofRequest } from './roof';
 import { ConstructionRenderer, createPieceGhost } from './construction-render';
@@ -92,7 +95,17 @@ app.innerHTML = `
     <div id="controlsHint">Click world for mouse look · WASD move · E interact · Space gather · B build</div>
     <div id="joystick"><div id="stick"></div></div>
     <div class="mobile-actions"><button id="exitVehicle" class="hidden">EXIT</button><button id="actionA">A<span>Gather</span></button><button id="actionB">B<span>Interact</span></button></div>
-    <div class="quickbar"><button data-tool="axe" class="selected" aria-label="Gathering tool">⛏<small>Tool</small></button><button data-tool="build" aria-label="Build structures">▦<small>Build</small></button><button id="roadTool" aria-label="Build roads">╬<small>Road</small></button><button id="terrainTool" aria-label="Terrain editing tools">◇<small>Terrain</small></button><button id="paintTool" aria-label="Paint building surfaces">◒<small>Paint</small></button><button id="inventoryButton" aria-label="Open inventory">▣<small>Pack</small></button></div>
+    <button id="jumpButton" class="jump-button" aria-label="Jump">↑<span>Jump</span></button>
+    <div class="quickbar">
+      <button id="toolHubButton" class="selected" aria-label="Open tool hub">☷<small>Tools</small></button>
+      <button data-tool="build" aria-label="Build structures">▦<small>Build</small></button>
+      <button data-tool="axe" aria-label="Gathering tool">⛏<small>Tool</small></button>
+      <button id="inventoryButton" aria-label="Open inventory">▣<small>Pack</small></button>
+      <button id="atlasButton" aria-label="Open world atlas">◎<small>Atlas</small></button>
+      <button id="roadTool" class="hidden" aria-label="Build roads">Road</button>
+      <button id="terrainTool" class="hidden" aria-label="Terrain editing">Terrain</button>
+      <button id="paintTool" class="hidden" aria-label="Paint surfaces">Paint</button>
+    </div>
   </div>
   <div id="buildPanel" class="panel hidden" role="dialog" aria-labelledby="buildTitle"><h2 id="buildTitle">CHOOSE A BUILDING</h2><p>Select a structure to start placing it.</p><div id="buildCatalog"></div><button id="closeBuild" class="close" aria-label="Close build menu">×</button></div>
   <div id="placementToolbar" class="placement-toolbar hidden" aria-label="Building placement">
@@ -128,6 +141,36 @@ app.innerHTML = `
     <div class="tool-actions"><button data-road="dirt" class="selected">DIRT</button><button data-road="gravel">GRAVEL · 2 STONE</button><button data-road="stone">STONE · 4 STONE</button></div>
     <small id="roadStatus">Aim at the ground and click or tap to grade and place</small>
     <button id="roadExit" class="secondary">EXIT TOOL</button>
+  </div>
+  <div id="toolHub" class="tool-hub hidden" role="dialog" aria-label="Tool hub">
+    <header><strong>TOOL HUB</strong><button id="closeToolHub" aria-label="Close tool hub">×</button></header>
+    <div class="tool-hub-grid">
+      <button data-hub="build">▦<span>Build</span></button>
+      <button data-hub="road">╬<span>Road</span></button>
+      <button data-hub="terrain">◇<span>Terrain</span></button>
+      <button data-hub="paint">◒<span>Paint</span></button>
+      <button data-hub="fists">拳<span>Fists</span></button>
+      <button data-hub="stick">━<span>Stick</span></button>
+      <button data-hub="axe">⛏<span>Axe</span></button>
+      <button data-hub="stones">●<span id="stoneHubCount">Stones 0</span></button>
+      <button data-hub="torch">♨<span>Torch</span></button>
+      <button data-hub="atlas">◎<span>Atlas</span></button>
+    </div>
+  </div>
+  <div id="atlasPanel" class="atlas-panel hidden" role="dialog" aria-modal="true" aria-labelledby="atlasTitle">
+    <header><div><span>EXPEDITION RECORD</span><h2 id="atlasTitle">WORLD ATLAS</h2></div><button id="closeAtlas" class="close" aria-label="Close world atlas">×</button></header>
+    <div class="atlas-layout">
+      <aside class="atlas-controls">
+        <label>Scale <select id="atlasLevel"><option value="world">World</option><option value="continent">Continent</option><option value="region">Region</option><option value="local">Local</option></select></label>
+        <div class="atlas-buttons"><button id="atlasZoomOut" aria-label="Zoom out">−</button><span id="atlasZoom">4×</span><button id="atlasZoomIn" aria-label="Zoom in">+</button></div>
+        <label>Marker name <input id="atlasMarkerName" maxlength="32" value="Camp"></label>
+        <button id="atlasAddMarker" class="secondary">ADD MARKER</button>
+        <button id="atlasMeasure" class="secondary">MEASURE ROUTE</button>
+        <div id="atlasCoordinates" class="atlas-coordinates"></div>
+        <div id="atlasMarkerList" class="atlas-marker-list"></div>
+      </aside>
+      <canvas id="atlasCanvas" width="920" height="620" aria-label="Interactive world atlas"></canvas>
+    </div>
   </div>
   <div id="npcPanel" class="panel hidden"><h2>MIRA · SURVIVOR</h2><p id="npcStatus">A friendly survivor.</p><button id="npcRecruit" class="primary">RECRUIT</button><button data-job="wood" class="secondary">GATHER WOOD</button><button data-job="stone" class="secondary">GATHER STONE</button><button data-job="idle" class="secondary">REST</button><button id="closeNpc" class="close" aria-label="Close survivor menu">×</button></div>
   <div id="craftPanel" class="panel hidden"><h2>CRAFTING</h2><p>Craft a pickaxe to mine ore, coal and limestone. Clay and sand can be gathered by hand.</p><button data-craft="axe" class="secondary">AXE · 3 WOOD, 2 STONE</button><button data-craft="pickaxe" class="secondary">PICKAXE · 2 WOOD, 3 STONE</button><p id="toolStatus"></p><button id="craftTorch" class="secondary">CRAFT TORCH · 2 WOOD, 1 COAL</button><button id="equipTorch" class="secondary">EQUIP TORCH</button><button id="igniteTorch" class="secondary">IGNITE TORCH</button><p id="torchStatus"></p><p id="mineralInventory"></p><button id="closeCraft" class="close" aria-label="Close crafting">×</button></div>
@@ -262,6 +305,7 @@ const powerLines = new THREE.Group();
 scene.add(powerLines);
 const enemies: THREE.Group[] = [];
 const enemyProjectiles: { mesh: THREE.Mesh; velocity: THREE.Vector3; remaining: number; damage: number }[] = [];
+const thrownStones: { mesh: THREE.Mesh; velocity: THREE.Vector3; remaining: number }[] = [];
 const projectileGeometry = new THREE.IcosahedronGeometry(0.13, 1);
 const projectileMaterial = new THREE.MeshStandardMaterial({ color: '#cf9bee', emissive: '#854db3', emissiveIntensity: 1.5 });
 let wildlife: AnimalState[] = [];
@@ -290,6 +334,13 @@ const placementPointer = new THREE.Vector2();
 let placementFootprint: THREE.Mesh | null = null;
 let ghostMaterial: THREE.MeshBasicMaterial | null = null;
 let targetOnTerrain = true;
+let playerVerticalVelocity = 0;
+let grounded = true;
+let swimming = false;
+type SelectedWeapon = 'fists' | 'stick' | 'axe' | 'stones';
+let selectedWeapon: SelectedWeapon = 'fists';
+let stones = 0;
+let pendingMelee: { target: THREE.Group | AnimalState; kind: 'enemy' | 'animal'; damage: number; time: number } | null = null;
 type ToolMode = 'normal' | 'terrain' | 'road' | 'paint';
 let toolMode: ToolMode = 'normal';
 let terrainOperation: 'lower' | 'raise' | 'flatten' | 'smooth' | 'slope' = 'lower';
@@ -305,6 +356,15 @@ const paintHistory: SurfacePaint[][] = [];
 let paintPreset: PaintPreset = 'natural';
 let paintErase = false;
 let paintBrush = 5;
+const atlasState: AtlasState = {
+  explored: [],
+  markers: [],
+  zoom: 4,
+  centerLatitude: 0,
+  centerLongitude: 0,
+  level: 'world',
+};
+let atlasMeasureStart: MapMarker | null = null;
 let driving = false;
 let vehicleSpeed = 0;
 let accelerateTouch = false;
@@ -392,6 +452,7 @@ addEventListener('keydown', event => {
       return;
     }
     if (!document.querySelector('#updatePanel')!.classList.contains('hidden')) return;
+    if (!document.querySelector('#atlasPanel')!.classList.contains('hidden')) { closeAtlas(); return; }
     if (!document.querySelector('#pausePanel')!.classList.contains('hidden')) togglePause();
     else if (!document.querySelector('#buildPanel')!.classList.contains('hidden') || buildMode) cancelBuild();
     else if (!document.querySelector('#craftPanel')!.classList.contains('hidden')) document.querySelector('#craftPanel')!.classList.add('hidden');
@@ -415,6 +476,8 @@ addEventListener('keydown', event => {
   if (event.code === 'BracketLeft' && buildMode && isPieceKind(buildKind)) changeFloor(-1);
   if (event.code === 'BracketRight' && buildMode && isPieceKind(buildKind)) changeFloor(1);
   if (event.code === 'KeyM') showMap();
+  if (event.code === 'KeyV') { if (!buildMode && !gameplayBlocked()) startJump(); }
+  if (event.code === 'KeyC') throwStone();
 });
 addEventListener('keyup', event => keys.delete(event.code));
 addEventListener('blur', () => { keys.clear(); move.set(0, 0); });
@@ -781,6 +844,63 @@ document.querySelector('#resumeGame')!.addEventListener('click', togglePause);
 document.querySelector('#saveGame')!.addEventListener('click', () => saveGame(true));
 document.querySelector('#returnMenu')!.addEventListener('click', () => location.reload());
 document.querySelector('#closeBuild')!.addEventListener('click', cancelBuild);
+document.querySelector('#jumpButton')!.addEventListener('pointerdown', () => startJump());
+document.querySelector('#atlasButton')!.addEventListener('click', showMap);
+document.querySelector('#closeAtlas')!.addEventListener('click', closeAtlas);
+document.querySelector('#atlasAddMarker')!.addEventListener('click', addAtlasMarker);
+document.querySelector('#atlasZoomIn')!.addEventListener('click', () => {
+  atlasState.zoom = Math.min(12, atlasState.zoom * 2);
+  drawAtlas();
+});
+document.querySelector('#atlasZoomOut')!.addEventListener('click', () => {
+  atlasState.zoom = Math.max(1, atlasState.zoom / 2);
+  drawAtlas();
+});
+document.querySelector('#atlasLevel')!.addEventListener('change', event => {
+  atlasState.level = (event.target as HTMLSelectElement).value as AtlasState['level'];
+  atlasState.zoom = atlasState.level === 'world' ? 1 : atlasState.level === 'continent' ? 2 : atlasState.level === 'region' ? 4 : 8;
+  (document.querySelector('#atlasLevel') as HTMLSelectElement).value = atlasState.level;
+  drawAtlas();
+});
+document.querySelector('#atlasMeasure')!.addEventListener('click', () => {
+  if (!atlasMeasureStart) {
+    const position = atlasPosition();
+    atlasMeasureStart = { id: 'measure-start', name: 'Start', ...position, kind: 'landmark' };
+    toast('Route start set at your position');
+  } else {
+    const position = atlasPosition();
+    const distance = geographicDistanceMeters(atlasMeasureStart, position);
+    const estimate = distance / 1000 / 35;
+    toast(`Approx. route: ${(distance / 1000).toFixed(1)} km · ${estimate.toFixed(1)} h on foot`);
+    atlasMeasureStart = null;
+  }
+});
+const atlasCanvas = document.querySelector<HTMLCanvasElement>('#atlasCanvas')!;
+let atlasDrag: { x: number; y: number } | null = null;
+atlasCanvas.addEventListener('pointerdown', event => {
+  atlasDrag = { x: event.clientX, y: event.clientY };
+  atlasCanvas.setPointerCapture(event.pointerId);
+});
+atlasCanvas.addEventListener('pointermove', event => {
+  if (!atlasDrag) return;
+  const dx = event.clientX - atlasDrag.x;
+  const dy = event.clientY - atlasDrag.y;
+  const rect = atlasCanvas.getBoundingClientRect();
+  const longitudeSpan = 360 / atlasState.zoom;
+  const latitudeSpan = 180 / atlasState.zoom;
+  atlasState.centerLongitude -= dx / rect.width * longitudeSpan;
+  atlasState.centerLatitude += dy / rect.height * latitudeSpan;
+  atlasState.centerLongitude = ((atlasState.centerLongitude + 180) % 360 + 360) % 360 - 180;
+  atlasState.centerLatitude = Math.max(-90, Math.min(90, atlasState.centerLatitude));
+  atlasDrag = { x: event.clientX, y: event.clientY };
+  drawAtlas();
+});
+atlasCanvas.addEventListener('pointerup', () => { atlasDrag = null; });
+atlasCanvas.addEventListener('wheel', event => {
+  event.preventDefault();
+  atlasState.zoom = Math.max(1, Math.min(12, atlasState.zoom * (event.deltaY < 0 ? 2 : 0.5)));
+  drawAtlas();
+}, { passive: false });
 document.querySelector('#inventoryButton')!.addEventListener('click', () => {
   if (paused || driving || buildMode || !document.querySelector('#npcPanel')!.classList.contains('hidden')
     || !document.querySelector('#smelterPanel')!.classList.contains('hidden')) return;
@@ -797,6 +917,22 @@ document.querySelector('#paintTool')!.addEventListener('click', enterPaintTool);
 document.querySelector('#terrainExit')!.addEventListener('click', exitToolModes);
 document.querySelector('#roadExit')!.addEventListener('click', exitToolModes);
 document.querySelector('#paintExit')!.addEventListener('click', exitToolModes);
+document.querySelector('#toolHubButton')!.addEventListener('click', () => document.querySelector('#toolHub')!.classList.toggle('hidden'));
+document.querySelector('#closeToolHub')!.addEventListener('click', () => document.querySelector('#toolHub')!.classList.add('hidden'));
+document.querySelectorAll<HTMLButtonElement>('[data-hub]').forEach(button => button.addEventListener('click', () => {
+  const mode = button.dataset.hub!;
+  document.querySelector('#toolHub')!.classList.add('hidden');
+  if (mode === 'build') toggleBuild();
+  else if (mode === 'road') enterRoadTool();
+  else if (mode === 'terrain') enterTerrainTool();
+  else if (mode === 'paint') enterPaintTool();
+  else if (mode === 'atlas') showMap();
+  else if (mode === 'torch') document.querySelector<HTMLButtonElement>('#inventoryButton')!.click();
+  else {
+    selectedWeapon = mode as SelectedWeapon;
+    toast(`${selectedWeapon === 'stones' ? 'Throwing stones' : selectedWeapon} selected`);
+  }
+}));
 document.querySelectorAll<HTMLButtonElement>('[data-terrain]').forEach(button => button.addEventListener('click', () => {
   terrainOperation = button.dataset.terrain as typeof terrainOperation;
   document.querySelectorAll('[data-terrain]').forEach(candidate => candidate.classList.toggle('selected', candidate === button));
@@ -985,6 +1121,12 @@ function resetWorld() {
   pendingRoofs.clear();
   roads.splice(0, roads.length);
   surfacePaint.splice(0, surfacePaint.length);
+  atlasState.explored.splice(0, atlasState.explored.length);
+  atlasState.markers.splice(0, atlasState.markers.length);
+  atlasState.zoom = 4;
+  atlasState.centerLatitude = 0;
+  atlasState.centerLongitude = 0;
+  atlasState.level = 'world';
   refreshRoads();
   constructionRenderer.refresh(structures, surfacePaint);
   autoRoof = true;
@@ -1009,6 +1151,8 @@ function resetWorld() {
   document.querySelector('#smelterPanel')!.classList.add('hidden');
   tools.length = 0;
   Object.assign(torch, { crafted: false, equipped: false, lit: false });
+  stones = 0;
+  selectedWeapon = 'fists';
   Object.assign(npcState, { recruited: false, job: 'idle', carrying: null });
   health = 100;
   const spawn = safeSpawn(seed)!;
@@ -1067,6 +1211,15 @@ function clearMovement() {
   stick.style.transform = 'translate(0, 0)';
   accelerateTouch = false;
   brakeTouch = false;
+}
+
+function startJump() {
+  if (driving || !gameStarted || gameplayBlocked() || swimming) return;
+  if (!grounded) return;
+  playerVerticalVelocity = 7.2;
+  grounded = false;
+  animationAction = 'attack';
+  animationActionTime = 0.45;
 }
 
 function exitToolModes() {
@@ -1145,8 +1298,7 @@ scene.add(roadMeshes);
 
 function roadMesh(segment: RoadSegment) {
   const group = new THREE.Group();
-  const layout = connectionLayout(segment.x, segment.z, roads);
-  segment.rotation = layout.rotation;
+  segment.rotation = connectionLayout(segment.x, segment.z, roads).rotation;
   group.position.set(segment.x, segment.height + 0.035, segment.z);
   group.rotation.y = segment.rotation;
   const surfaceColor = segment.kind === 'dirt' ? '#8d7657' : segment.kind === 'gravel' ? '#77756b' : '#686e68';
@@ -1157,20 +1309,6 @@ function roadMesh(segment: RoadSegment) {
   surface.receiveShadow = true;
   surface.name = 'road-surface';
   group.add(surface);
-  if (layout.shape !== 'straight') {
-    const shoulder = new THREE.Mesh(new THREE.RingGeometry(0.35, 1.08, 12, 1, 0, layout.shape === 'junction' ? Math.PI * 2 : Math.PI / 2),
-      new THREE.MeshStandardMaterial({ color: surfaceColor, roughness: 1 }));
-    shoulder.rotation.x = -Math.PI / 2;
-    shoulder.position.y = 0.006;
-    shoulder.name = 'road-shoulder';
-    group.add(shoulder);
-  }
-  for (const side of [-1, 1]) {
-    const edge = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.035, 2), new THREE.MeshStandardMaterial({ color: '#b7ad8c', roughness: 1 }));
-    edge.position.set(side * 0.82, 0.025, 0);
-    edge.receiveShadow = true;
-    group.add(edge);
-  }
   return group;
 }
 
@@ -1273,7 +1411,8 @@ function gameplayBlocked() {
     || !document.querySelector('#craftPanel')!.classList.contains('hidden')
     || !document.querySelector('#smelterPanel')!.classList.contains('hidden')
     || !document.querySelector('#npcPanel')!.classList.contains('hidden')
-    || !document.querySelector('#updatePanel')!.classList.contains('hidden');
+    || !document.querySelector('#updatePanel')!.classList.contains('hidden')
+    || !document.querySelector('#atlasPanel')!.classList.contains('hidden');
 }
 
 function toggleBuild() {
@@ -1617,42 +1756,57 @@ function placeBuilding() {
   saveGame(false);
 }
 
+function throwStone() {
+  if (!gameStarted || gameplayBlocked() || driving || buildMode) return;
+  if (stones < 1) { toast('No stones equipped'); return; }
+  stones--;
+  document.querySelector('#stoneHubCount')!.textContent = `Stones ${stones}`;
+  selectedWeapon = 'stones';
+  const stone = new THREE.Mesh(new THREE.IcosahedronGeometry(0.09, 1),
+    new THREE.MeshStandardMaterial({ color: '#cfd4ca', roughness: 0.9 }));
+  stone.castShadow = true;
+  stone.position.copy(player.position).add(new THREE.Vector3(0, 1.25, 0));
+  const forward = new THREE.Vector3(Math.sin(player.rotation.y), 0, Math.cos(player.rotation.y));
+  const velocity = forward.multiplyScalar(11).add(new THREE.Vector3(0, 4.8, 0));
+  thrownStones.push({ mesh: stone, velocity, remaining: 3 });
+  scene.add(stone);
+  animationAction = 'attack';
+  animationActionTime = 0.45;
+  toast('Stone thrown');
+}
+
 function gather() {
   if (!gameStarted || gameplayBlocked() || driving || buildMode) return;
   const enemy = enemies.find(item => item.position.distanceTo(player.position) < 2.8);
   if (enemy) {
     if (attackCooldown > 0) return;
+    const toEnemy = enemy.position.clone().sub(player.position).setY(0);
+    if (toEnemy.lengthSq() === 0) return;
+    const heading = Math.atan2(toEnemy.x, toEnemy.z);
+    player.rotation.y = heading;
+    if (rayIsObstructed(player.position.x, player.position.y + 1, player.position.z,
+      enemy.position.x, enemy.position.y + 1, enemy.position.z, structures, buildingRecords)) {
+      toast('Attack blocked');
+      return;
+    }
     attackCooldown = 0.6;
     animationAction = 'attack';
     animationActionTime = 0.5;
-    enemy.userData.health = (enemy.userData.health as number) - 1;
-    enemy.userData.hurtAnimation = 0.35;
-    effects.burst(enemy.position, 'damage');
-    if (enemy.userData.health <= 0) {
-      scene.remove(enemy);
-      disposeCharacter(enemy);
-      enemies.splice(enemies.indexOf(enemy), 1);
-      toast(`${enemy.userData.enemyKind as string} defeated`);
-    } else toast('Hit!');
+    pendingMelee = { target: enemy, kind: 'enemy', damage: selectedWeapon === 'axe' ? 2 : selectedWeapon === 'stick' ? 1 : 1, time: 0.28 };
     return;
   }
   const animal = wildlife.find(item => Math.hypot(item.x - player.position.x, item.z - player.position.z) < 2);
   if (animal) {
     if (attackCooldown > 0) return;
+    if (rayIsObstructed(player.position.x, player.position.y + 1, player.position.z,
+      animal.x, world.heightAt(animal.x, animal.z) + 1, animal.z, structures, buildingRecords)) {
+      toast('Attack blocked');
+      return;
+    }
     attackCooldown = 0.6;
     animationAction = 'attack';
     animationActionTime = 0.5;
-    animal.health--;
-    effects.burst(new THREE.Vector3(animal.x, world.heightAt(animal.x, animal.z), animal.z), 'damage');
-    if (animal.health <= 0) {
-      wildlife.splice(wildlife.indexOf(animal), 1);
-      removeAnimal(animal.id);
-      if (animal.species !== 'wolf') {
-        resources.food += animal.species === 'deer' ? 3 : 1;
-        updateResources();
-      }
-      toast(animal.species === 'wolf' ? 'Wolf driven off' : 'Food collected');
-    } else toast(`${animal.species} hit`);
+    pendingMelee = { target: animal, kind: 'animal', damage: selectedWeapon === 'axe' ? 2 : selectedWeapon === 'stick' ? 1 : 1, time: 0.28 };
     return;
   }
   const deposit = world.findNearestDeposit(player.position.x, player.position.z, 3.2);
@@ -1682,6 +1836,8 @@ function gather() {
     : found.resource === 'stone' && tools.includes('pickaxe') ? 4 : 2;
   effects.burst(found.position, found.resource);
   resources[found.resource] += amount;
+  if (found.resource === 'stone') stones += amount;
+  document.querySelector('#stoneHubCount')!.textContent = `Stones ${stones}`;
   toast(`+${amount} ${found.resource}`);
   updateResources();
   updateObjective();
@@ -1794,10 +1950,181 @@ function toast(message: string) {
 }
 
 function showMap() {
-  if (gameStarted && !gameplayBlocked()) {
-    const position = planetCoordinates(player.position.x, player.position.z);
-    toast(`Local map: ${Math.round(position.x)}, ${Math.round(position.z)}`);
+  if (!gameStarted || gameplayBlocked()) return;
+  releasePointerLock();
+  const point = planetCoordinates(player.position.x, player.position.z);
+  atlasState.centerLatitude = point.z / PLANET_HEIGHT * 90;
+  atlasState.centerLongitude = point.x / PLANET_WIDTH * 180;
+  const tile = hierarchicalTileId(atlasState.centerLatitude, atlasState.centerLongitude, 4);
+  if (!atlasState.explored.includes(tile)) atlasState.explored.push(tile);
+  document.querySelector('#atlasPanel')!.classList.remove('hidden');
+  drawAtlas();
+  void saveGame(false);
+}
+
+function atlasPosition() {
+  const point = planetCoordinates(player.position.x, player.position.z);
+  return { latitude: point.z / PLANET_HEIGHT * 90, longitude: point.x / PLANET_WIDTH * 180,
+    altitude: world.heightAt(player.position.x, player.position.z) };
+}
+
+function drawAtlas() {
+  const canvas = document.querySelector<HTMLCanvasElement>('#atlasCanvas')!;
+  const ctx = canvas.getContext('2d')!;
+  const width = canvas.width;
+  const height = canvas.height;
+  ctx.clearRect(0, 0, width, height);
+  const ocean = ctx.createLinearGradient(0, 0, 0, height);
+  ocean.addColorStop(0, '#91aaa0');
+  ocean.addColorStop(1, '#557f7a');
+  ctx.fillStyle = ocean;
+  ctx.fillRect(0, 0, width, height);
+
+  const zoom = atlasState.zoom;
+  const viewWidth = 360 / zoom;
+  const viewHeight = 180 / zoom;
+  const project = (latitude: number, longitude: number) => ({
+    x: ((longitude - (atlasState.centerLongitude - viewWidth / 2)) / viewWidth) * width,
+    y: ((atlasState.centerLatitude + viewHeight / 2 - latitude) / viewHeight) * height,
+  });
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, width, height);
+  ctx.clip();
+  for (let latIndex = -90; latIndex < 90; latIndex += 2) {
+    for (let lonIndex = -180; lonIndex < 180; lonIndex += 2) {
+      const longitude = lonIndex + 1;
+      const latitude = latIndex + 1;
+      if (longitude < atlasState.centerLongitude - viewWidth / 2 - 2
+        || longitude > atlasState.centerLongitude + viewWidth / 2 + 2
+        || latitude < atlasState.centerLatitude - viewHeight / 2 - 2
+        || latitude > atlasState.centerLatitude + viewHeight / 2 + 2) continue;
+      const continental = Math.sin(longitude * 0.047 + seed * 0.013) * Math.cos(latitude * 0.031)
+        + Math.sin(longitude * 0.018 - latitude * 0.055 + seed * 0.027) * 0.7;
+      const altitude = 900 + continental * 520;
+      const moisture = 0.5 + Math.cos(latitude * 0.04 + seed * 0.01) * 0.25
+        + Math.sin(longitude * 0.09 + seed) * 0.12;
+      const zone = climateZone(latitude, altitude, longitude > -30 && longitude < 30 ? 40 : 800, moisture, seed);
+      const tile = hierarchicalTileId(latitude, longitude, 4);
+      const explored = atlasState.explored.includes(tile);
+      if (!explored) continue;
+      const point = project(latitude, longitude);
+      const sizeX = width / viewWidth * 2.2;
+      const sizeY = height / viewHeight * 2.2;
+      if (continental > -0.28) {
+        const colors: Record<string, string> = {
+          'polar-ice': '#dce5df', tundra: '#9da98b', alpine: '#7f8176', boreal: '#58745b',
+          'temperate-deciduous': '#728d52', 'temperate-mixed': '#66875b', grassland: '#9baa64',
+          steppe: '#b1a66d', savanna: '#b09b5f', 'hot-desert': '#c5a66f', 'cold-desert': '#aaa184',
+          'tropical-rainforest': '#356c48', 'tropical-seasonal': '#66824a', wetland: '#5c8067',
+          coastal: '#c1b875',
+        };
+        ctx.fillStyle = colors[zone];
+        ctx.fillRect(point.x - sizeX / 2, point.y - sizeY / 2, sizeX, sizeY);
+      }
+    }
   }
+  ctx.restore();
+
+  ctx.save();
+  ctx.globalAlpha = 0.18;
+  ctx.strokeStyle = '#4e5f54';
+  ctx.lineWidth = 1;
+  for (let lon = -180; lon <= 180; lon += 30) {
+    const a = project(-90, lon);
+    const b = project(90, lon);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  for (let lat = -60; lat <= 60; lat += 30) {
+    const a = project(lat, -180);
+    const b = project(lat, 180);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  const position = atlasPosition();
+  const player = project(position.latitude, position.longitude);
+  ctx.fillStyle = '#f1cf70';
+  ctx.strokeStyle = '#263b36';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(player.x, player.y - 11);
+  ctx.lineTo(player.x - 7, player.y + 8);
+  ctx.lineTo(player.x + 7, player.y + 8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = '#263b36';
+  ctx.font = '700 11px Georgia';
+  for (const marker of atlasState.markers) {
+    const point = project(marker.latitude, marker.longitude);
+    if (point.x < 0 || point.x > width || point.y < 0 || point.y > height) continue;
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, 6, 0, Math.PI * 2);
+    ctx.fillStyle = marker.kind === 'settlement' ? '#b95e48' : '#263b36';
+    ctx.fill();
+    ctx.fillStyle = '#263b36';
+    ctx.fillText(marker.name, point.x + 9, point.y + 3);
+  }
+
+  ctx.fillStyle = '#263b36';
+  ctx.font = '700 12px monospace';
+  ctx.fillText(`${position.latitude.toFixed(3)}°, ${position.longitude.toFixed(3)}°`, 12, height - 14);
+  const levelSeason = seasonsForLatitude(position.latitude, day);
+  ctx.fillText(`${climateZone(position.latitude, position.altitude, 800, 0.5, seed)} · ${levelSeason.toUpperCase()}`, 12, height - 34);
+
+  document.querySelector('#atlasZoom')!.textContent = `${zoom}×`;
+  document.querySelector('#atlasCoordinates')!.innerHTML =
+    `LAT ${position.latitude.toFixed(4)}°<br>LON ${position.longitude.toFixed(4)}°<br>REGION ${regionIdForCoordinates(position.latitude, position.longitude)}`;
+  refreshAtlasMarkers();
+}
+
+function refreshAtlasMarkers() {
+  const list = document.querySelector('#atlasMarkerList')!;
+  list.replaceChildren();
+  for (const marker of atlasState.markers) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = `${marker.name} · ${marker.latitude.toFixed(2)}, ${marker.longitude.toFixed(2)}`;
+    button.addEventListener('click', () => {
+      atlasState.centerLatitude = marker.latitude;
+      atlasState.centerLongitude = marker.longitude;
+      drawAtlas();
+    });
+    list.append(button);
+  }
+}
+
+function closeAtlas() {
+  document.querySelector('#atlasPanel')!.classList.add('hidden');
+  void saveGame(false);
+}
+
+function addAtlasMarker() {
+  const position = atlasPosition();
+  const nameInput = document.querySelector<HTMLInputElement>('#atlasMarkerName')!;
+  const name = nameInput.value.trim() || 'Camp';
+  if (atlasState.markers.length >= 100) { toast('Marker limit reached'); return; }
+  const marker: MapMarker = {
+    id: `marker-${Date.now()}-${atlasState.markers.length}`,
+    name: name.slice(0, 32),
+    latitude: position.latitude,
+    longitude: position.longitude,
+    altitude: position.altitude,
+    kind: 'landmark',
+  };
+  atlasState.markers.push(marker);
+  drawAtlas();
+  void saveGame(false);
+  toast('Map marker added');
 }
 
 let last = performance.now();
@@ -1846,14 +2173,48 @@ function spawnEnemyProjectile(enemy: THREE.Group, damage: number) {
   scene.add(mesh);
 }
 
+function updateThrownStones(dt: number) {
+  for (let i = thrownStones.length - 1; i >= 0; i--) {
+    const projectile = thrownStones[i];
+    const previous = projectile.mesh.position.clone();
+    projectile.velocity.y -= 9.8 * dt;
+    projectile.mesh.position.addScaledVector(projectile.velocity, dt);
+    projectile.remaining -= dt;
+    const ground = world.heightAt(projectile.mesh.position.x, projectile.mesh.position.z);
+    const obstructed = projectile.mesh.position.y < ground
+      || rayIsObstructed(previous.x, previous.y, previous.z, projectile.mesh.position.x,
+        projectile.mesh.position.y, projectile.mesh.position.z, structures, buildingRecords);
+    let hitEnemy: THREE.Group | undefined;
+    if (!obstructed) hitEnemy = enemies.find(enemy => enemy.position.distanceTo(projectile.mesh.position) < 0.9);
+    if (obstructed || hitEnemy || projectile.remaining <= 0) {
+      if (hitEnemy) {
+        hitEnemy.userData.health = (hitEnemy.userData.health as number) - 2;
+        hitEnemy.userData.hurtAnimation = 0.35;
+        effects.burst(hitEnemy.position, 'damage');
+        if (hitEnemy.userData.health <= 0) {
+          scene.remove(hitEnemy);
+          disposeCharacter(hitEnemy);
+          enemies.splice(enemies.indexOf(hitEnemy), 1);
+        }
+      }
+      effects.burst(projectile.mesh.position, 'damage');
+      scene.remove(projectile.mesh);
+      thrownStones.splice(i, 1);
+    }
+  }
+}
+
 function updateEnemyProjectiles(dt: number) {
   for (let i = enemyProjectiles.length - 1; i >= 0; i--) {
     const projectile = enemyProjectiles[i];
     const point = projectile.mesh.position;
     const result = stepEnemyProjectile(point, projectile.velocity, projectile.remaining, dt,
       player.position.clone().add(new THREE.Vector3(0, 1, 0)), position =>
-        position.y < world.heightAt(position.x, position.z) || buildingRecords.some(b =>
-          position.y < b.y + 2.5 && Math.hypot(position.x - b.x, position.z - b.z) < buildingRadius(b.kind)));
+        position.y < world.heightAt(position.x, position.z)
+        || rayIsObstructed(projectile.mesh.position.x - projectile.velocity.x * dt,
+          projectile.mesh.position.y - projectile.velocity.y * dt,
+          projectile.mesh.position.z - projectile.velocity.z * dt,
+          position.x, position.y, position.z, structures, buildingRecords));
     projectile.remaining = result.remaining;
     if (result.finished) {
       if (result.hit) damagePlayer(projectile.damage, 'A necromancer struck you!');
@@ -1938,6 +2299,50 @@ function rebaseWorld() {
 
 function updateGame(dt: number) {
   effects.update(dt);
+  if (pendingMelee) {
+    pendingMelee.time -= dt;
+    if (pendingMelee.time <= 0) {
+      const pending = pendingMelee;
+      pendingMelee = null;
+      if (pending.kind === 'enemy') {
+        const enemy = pending.target as THREE.Group;
+        if (enemies.includes(enemy)) {
+          const blocked = rayIsObstructed(player.position.x, player.position.y + 1, player.position.z,
+            enemy.position.x, enemy.position.y + 1, enemy.position.z, structures, buildingRecords);
+          if (!blocked && enemy.position.distanceTo(player.position) <= 2.8) {
+            enemy.userData.health = (enemy.userData.health as number) - pending.damage;
+            enemy.userData.hurtAnimation = 0.35;
+            effects.burst(enemy.position, 'damage');
+            if (enemy.userData.health <= 0) {
+              scene.remove(enemy);
+              disposeCharacter(enemy);
+              enemies.splice(enemies.indexOf(enemy), 1);
+              toast(`${enemy.userData.enemyKind as string} defeated`);
+            } else toast('Hit!');
+          }
+        }
+      } else {
+        const animal = pending.target as AnimalState;
+        if (wildlife.includes(animal)) {
+          const blocked = rayIsObstructed(player.position.x, player.position.y + 1, player.position.z,
+            animal.x, world.heightAt(animal.x, animal.z) + 1, animal.z, structures, buildingRecords);
+          if (!blocked && Math.hypot(animal.x - player.position.x, animal.z - player.position.z) <= 2.2) {
+            animal.health -= pending.damage;
+            effects.burst(new THREE.Vector3(animal.x, world.heightAt(animal.x, animal.z), animal.z), 'damage');
+            if (animal.health <= 0) {
+              wildlife.splice(wildlife.indexOf(animal), 1);
+              removeAnimal(animal.id);
+              if (animal.species !== 'wolf') {
+                resources.food += animal.species === 'deer' ? 3 : 1;
+                updateResources();
+              }
+              toast(animal.species === 'wolf' ? 'Wolf driven off' : 'Food collected');
+            } else toast(`${animal.species} hit`);
+          }
+        }
+      }
+    }
+  }
   for (const building of buildingRecords) {
     if (building.smelting && advanceSmelting(building.smelting, ingots, dt)) {
       delete building.smelting;
@@ -1955,8 +2360,16 @@ function updateGame(dt: number) {
   const hour = Math.floor(gameMinutes / 60);
   const minute = Math.floor(gameMinutes % 60);
   document.querySelector('#timeText')!.textContent = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-  const season = seasonForDay(day);
-  const weather = weatherForDay(day, seed);
+  const mapPosition = atlasPosition();
+  const season = Math.abs(mapPosition.latitude) >= 23.5 ? seasonsForLatitude(mapPosition.latitude, day) : seasonForDay(day);
+  const weatherBase = weatherForDay(day, seed);
+  const positionHeight = world.heightAt(player.position.x, player.position.z);
+  const climate = climateZone(mapPosition.latitude, positionHeight, 800, 0.5, seed);
+  const weather = climate === 'hot-desert' || climate === 'savanna' || climate === 'steppe'
+    ? (weatherBase === 'Rain' || weatherBase === 'Storm' || weatherBase === 'Snow' ? 'Clear' : weatherBase)
+    : climate === 'polar-ice' || climate === 'tundra'
+      ? (weatherBase === 'Rain' || weatherBase === 'Storm' ? 'Snow' : weatherBase)
+      : weatherBase;
   document.querySelector('#seasonText')!.textContent = `${season.toUpperCase()} · DAY ${day} · ${weather.toUpperCase()}`;
   world.setSeason(season);
   precipitation.update(weather, driving ? vehicle.position : player.position, dt, constructionRenderer.shelter);
@@ -2032,13 +2445,36 @@ function updateGame(dt: number) {
       target.position.z = nextZ;
       actualMovement = length;
     }
-    target.position.y = floorSurface(structures, target.position.x, target.position.z, target.position.y, world.heightAt(target.position.x, target.position.z));
+    if (grounded) target.position.y = floorSurface(structures, target.position.x, target.position.z, target.position.y, world.heightAt(target.position.x, target.position.z));
     const heading = Math.atan2(dx, dz);
     target.rotation.y = dampAngle(target.rotation.y, heading, 10, dt);
     if (!buildMode && document.pointerLockElement !== canvas && cameraSettings.autoFollow && performance.now() > manualCameraUntil) {
       cameraAngle = dampAngle(cameraAngle, Math.atan2(-dx, -dz), 2.2, dt);
     }
   } else previousInput.set(0, 0);
+
+  if (!driving) {
+    const ground = world.heightAt(player.position.x, player.position.z);
+    const waterDepth = 0.08 - ground;
+    swimming = ground < 0.1 && waterDepth > 0.12;
+    if (swimming) {
+      player.position.y = THREE.MathUtils.lerp(player.position.y, Math.max(0.55, ground + 0.55), 1 - Math.exp(-6 * dt));
+      playerVerticalVelocity = 0;
+      grounded = false;
+    } else {
+      playerVerticalVelocity -= 16 * dt;
+      const nextY = player.position.y + playerVerticalVelocity * dt;
+      const walkedGround = floorSurface(structures, player.position.x, player.position.z, nextY, ground);
+      if (nextY <= walkedGround) {
+        player.position.y = walkedGround;
+        playerVerticalVelocity = 0;
+        grounded = true;
+      } else {
+        player.position.y = nextY;
+        grounded = false;
+      }
+    }
+  }
 
   if (driving) {
     player.position.copy(vehicle.position).add(new THREE.Vector3(0, 1, 0));
@@ -2105,12 +2541,15 @@ function updateGame(dt: number) {
     const enemyDistance = direction.length();
     const intent = enemyIntent(kind, enemyDistance, enemy.userData.attackTimer === 0);
     let walking = 0;
-    if (enemyDistance > 0 && enemyDistance < 18) {
+    const enemyCanSee = !rayIsObstructed(enemy.position.x, enemy.position.y + 1, enemy.position.z,
+      player.position.x, player.position.y + 1, player.position.z, structures, buildingRecords);
+    if (enemyDistance > 0 && enemyDistance < 18 && enemyCanSee) {
       direction.normalize();
       const next = enemy.position.clone().addScaledVector(direction, dt * profile.speed * intent.movement);
-      if (world.heightAt(next.x, next.z) > -0.5 && buildingRecords.every(b => Math.hypot(next.x - b.x, next.z - b.z) > buildingRadius(b.kind))) {
-        enemy.position.x = next.x;
-        enemy.position.z = next.z;
+      const resolved = resolveActorMove(enemy.position.x, enemy.position.z, next.x, next.z, enemy.position.y, structures, buildingRecords, 0.35);
+      if (!resolved.blocked && world.heightAt(next.x, next.z) > -0.5) {
+        enemy.position.x = resolved.x;
+        enemy.position.z = resolved.z;
         walking = Math.abs(intent.movement);
       }
       enemy.position.y = world.heightAt(enemy.position.x, enemy.position.z);
@@ -2118,14 +2557,17 @@ function updateGame(dt: number) {
       if (intent.attack) {
         enemy.userData.attackTimer = profile.cooldown;
         enemy.userData.attackAnimation = 0.6;
-        if (profile.ranged) spawnEnemyProjectile(enemy, profile.damage);
-        else damagePlayer(profile.damage, `${kind} hit you!`);
+        if (enemyCanSee) {
+          if (profile.ranged) spawnEnemyProjectile(enemy, profile.damage);
+          else damagePlayer(profile.damage, `${kind} hit you!`);
+        }
       }
     }
     const hurt = enemy.userData.hurtAnimation as number;
     const attack = enemy.userData.attackAnimation as number;
     animateCharacter(enemy, dt, walking, kind === 'nightcreature', hurt > 0 ? 'hurt' : attack > 0 ? 'attack' : undefined, false, hurt || attack);
   });
+  updateThrownStones(dt);
   updateEnemyProjectiles(dt);
 
   if (buildGhost) {
@@ -2493,7 +2935,7 @@ async function saveGame(notify: boolean) {
     const db = await openDatabase();
     const tx = db.transaction('saves', 'readwrite');
     tx.objectStore('saves').put({
-      version: 10,
+      version: 11,
       seed,
       outfit,
       appearance: { ...appearance },
@@ -2512,6 +2954,16 @@ async function saveGame(notify: boolean) {
       terrain: world.snapshot(),
       roads: roads.map(road => ({ ...road })),
       paint: surfacePaint.map(paint => ({ ...paint, strokes: paint.strokes.map(stroke => ({ ...stroke })) })),
+      atlas: {
+        explored: [...atlasState.explored],
+        markers: atlasState.markers.map(marker => ({ ...marker })),
+        zoom: atlasState.zoom,
+        centerLatitude: atlasState.centerLatitude,
+        centerLongitude: atlasState.centerLongitude,
+        level: atlasState.level,
+      },
+      stones,
+      selectedWeapon,
       depleted: world.depletedSnapshot(),
       minerals: { ...mineralInventory },
       mining: world.miningSnapshot(),
@@ -2609,6 +3061,19 @@ async function loadGame() {
         });
         backupDb.close();
       }
+      if (saved.version < 11) {
+        const backupDb = await openDatabase();
+        const backupTx = backupDb.transaction('saves', 'readwrite');
+        const store = backupTx.objectStore('saves');
+        const existing = store.get('pre-planet-engine-backup');
+        existing.onsuccess = () => { if (!existing.result) store.put(saved, 'pre-planet-engine-backup'); };
+        await new Promise<void>((resolve, reject) => {
+          backupTx.oncomplete = () => resolve();
+          backupTx.onerror = () => reject(backupTx.error);
+          backupTx.onabort = () => reject(backupTx.error ?? new Error('Planet engine backup transaction aborted'));
+        });
+        backupDb.close();
+      }
       const save = saved;
       seed = save.seed;
       outfit = save.outfit;
@@ -2626,6 +3091,8 @@ async function loadGame() {
       health = save.health ?? 100;
       tools.push(...(save.tools ?? []));
       Object.assign(torch, save.torch ?? { crafted: false, equipped: false, lit: false });
+      stones = save.stones ?? 0;
+      selectedWeapon = save.selectedWeapon ?? 'fists';
       world.updateChunks(save.player.x, save.player.z, true);
       world.restore(save.terrain);
       world.restoreDepleted(save.depleted ?? []);
@@ -2648,6 +3115,14 @@ async function loadGame() {
       structures.push(...(save.structures ?? []).map(piece => ({ ...piece })));
       roads.splice(0, roads.length, ...(save.roads ?? []).map(road => ({ ...road })));
       surfacePaint.splice(0, surfacePaint.length, ...(save.paint ?? []).map(paint => ({ ...paint, strokes: paint.strokes.map(stroke => ({ ...stroke })) })));
+      if (save.atlas) {
+        atlasState.explored.splice(0, atlasState.explored.length, ...save.atlas.explored);
+        atlasState.markers.splice(0, atlasState.markers.length, ...save.atlas.markers.map(marker => ({ ...marker })));
+        atlasState.zoom = save.atlas.zoom;
+        atlasState.centerLatitude = save.atlas.centerLatitude;
+        atlasState.centerLongitude = save.atlas.centerLongitude;
+        atlasState.level = save.atlas.level;
+      }
       refreshRoads();
       refreshPaintMarkers();
       world.setDepositExclusions([

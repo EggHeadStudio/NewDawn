@@ -87,4 +87,18 @@ describe('saved worlds', () => {
     expect(isSaveData({ ...save, buildings: [furnace] })).toBe(true);
     expect(isSaveData({ ...save, version: 8, structures: [], buildings: [furnace] })).toBe(false);
   });
+  it('validates version 10/11 roads, paint and atlas state', () => {
+    const save = { ...oldSave(), version: 11, appearance: defaultAppearance(), playerName: 'Survivor',
+      npcAppearanceSeed: 53917, wildlife: [], player: { x: 0, y: 2, z: 0 }, structures: [],
+      minerals: emptyMinerals(), mining: {}, ingots: { iron: 0, copper: 0, glass: 0 }, ironPickaxe: false,
+      roads: [{ id: 'road-0-0', kind: 'dirt', x: 0, z: 0, height: 1, rotation: 0, width: 2 }],
+      paint: [{ pieceId: 'wall-1', surface: 'front', color: '#a94f43',
+        strokes: [{ x: 0.5, y: 0.5, color: '#a94f43', size: 0.1 }] }],
+      atlas: { explored: ['4/8/8'], markers: [], zoom: 4, centerLatitude: 0, centerLongitude: 0, level: 'world' } };
+    expect(isSaveData(save)).toBe(true);
+    expect(isSaveData({ ...save, atlas: { ...save.atlas, zoom: 99 } })).toBe(false);
+    expect(isSaveData({ ...save, roads: [{ ...save.roads[0], kind: 'unknown' }] })).toBe(false);
+    expect(isSaveData({ ...save, stones: 12, selectedWeapon: 'stones' })).toBe(true);
+    expect(isSaveData({ ...save, stones: -1 })).toBe(false);
+  });
 });

@@ -1,6 +1,8 @@
 export const PLANET_WIDTH = 3072;
 export const PLANET_HEIGHT = 1536;
 export const CHUNK_SIZE = 24;
+export const GAMEPLAY_METERS_PER_UNIT = 1;
+export const LOCAL_PLANET_TILE_METERS = 24;
 
 function modulo(value: number, period: number) {
   return ((value % period) + period) % period;
