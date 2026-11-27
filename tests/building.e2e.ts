@@ -100,8 +100,8 @@ async function setScenario(page: Page, scenario: 'npc' | 'vehicle' | 'combat') {
   }), scenario);
 }
 
-async function giveResources(page: Page) {
-  await page.evaluate(() => new Promise<void>((resolve, reject) => {
+async function giveResources(page: Page, peaceful = false) {
+  await page.evaluate(peaceful => new Promise<void>((resolve, reject) => {
     const request = indexedDB.open('new-dawn', 1);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
@@ -113,13 +113,14 @@ async function giveResources(page: Page) {
         const data = get.result;
         data.resources.wood = 20;
         data.resources.stone = 20;
+        if (peaceful) data.wildlife = [];
         store.put(data, 'primary');
       };
       tx.oncomplete = () => { db.close(); resolve(); };
       tx.onerror = () => reject(tx.error);
       tx.onabort = () => reject(tx.error);
     };
-  }));
+  }), peaceful);
 }
 
 async function aim(page: Page, touch: boolean, x: number, y: number) {
@@ -140,7 +141,7 @@ for (const viewport of viewports) {
       await page.locator('#newGame').click();
       await expect(page.locator('#pauseButton')).toBeVisible();
       await save(page);
-      await giveResources(page);
+      await giveResources(page, true);
       await page.reload();
       await page.locator('#continueGame').click();
       await expect(page.locator('#survivorLabel')).toHaveText('Survivor');

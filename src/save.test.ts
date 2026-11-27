@@ -30,6 +30,8 @@ describe('saved worlds', () => {
     expect(isSaveData({ ...oldSave(), resources: { wood: -2 } })).toBe(false);
     expect(isSaveData({ ...oldSave(), buildings: [{ kind: 'invalid' }] })).toBe(false);
     expect(isSaveData({ ...oldSave(), depleted: [1] })).toBe(false);
+    expect(isSaveData({ ...oldSave(), onboarding: { mode: 'free', gathered: false, openedPack: false } })).toBe(true);
+    expect(isSaveData({ ...oldSave(), onboarding: { mode: 'guide', gathered: true } })).toBe(false);
   });
   it('validates version 7 structures and preserves legacy prefab buildings', () => {
     const frame = { id: 'frame', kind: 'doorframe', x: 24, z: 1, y: 2, level: 0, rotation: 0, open: false };
@@ -105,6 +107,10 @@ describe('saved worlds', () => {
       npc: { x: -PLANET_WIDTH / 2 + 5, z: 180 }, vehicle: { x: 0, z: 0 },
       buildings: [{ kind: 'storage', x: -PLANET_WIDTH / 2 + 5, z: 180, y: 1, rotation: 0 }] })).toBe(true);
     expect(isSaveData({ ...save, player: { x: PLANET_WIDTH * 3, y: 1, z: 0 } })).toBe(false);
+    const seamWall = { id: 'seam-wall', kind: 'wall', x: PLANET_WIDTH / 2, z: 1, y: 2, level: 0, rotation: 0, open: false };
+    expect(isSaveData({ ...save, structures: [seamWall], terrain: { '0,0': 0.28 } })).toBe(true);
+    expect(isSaveData({ ...save, structures: [{ ...seamWall, x: PLANET_WIDTH * 2 + 2 }] })).toBe(false);
+    expect(isSaveData({ ...save, terrain: { '0,0': 8.01 } })).toBe(false);
   });
   it('requires valid canonical player and vehicle positions in version 12 saves', () => {
     const save = { ...oldSave(), version: 12, appearance: defaultAppearance(), playerName: 'Survivor',

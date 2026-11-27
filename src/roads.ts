@@ -16,17 +16,21 @@ export const roadCosts: Record<RoadKind, { wood: number; stone: number }> = {
   stone: { wood: 0, stone: 4 },
 };
 
-export function neighborKind(x: number, z: number, segments: RoadSegment[]) {
+export function roadSlots(segments: readonly RoadSegment[]) {
+  return new Set(segments.map(segment => `${segment.x},${segment.z}`));
+}
+
+export function neighborKind(x: number, z: number, slots: ReadonlySet<string>) {
   return {
-    east: segments.some(segment => segment.x === x + 2 && segment.z === z),
-    west: segments.some(segment => segment.x === x - 2 && segment.z === z),
-    south: segments.some(segment => segment.x === x && segment.z === z + 2),
-    north: segments.some(segment => segment.x === x && segment.z === z - 2),
+    east: slots.has(`${x + 2},${z}`),
+    west: slots.has(`${x - 2},${z}`),
+    south: slots.has(`${x},${z + 2}`),
+    north: slots.has(`${x},${z - 2}`),
   };
 }
 
-export function connectionLayout(x: number, z: number, segments: RoadSegment[]) {
-  const neighbors = neighborKind(x, z, segments);
+export function connectionLayout(x: number, z: number, slots: ReadonlySet<string>) {
+  const neighbors = neighborKind(x, z, slots);
   const count = Object.values(neighbors).filter(Boolean).length;
   if (count === 0) return { shape: 'endpoint', rotation: 0 };
   if (count === 1) {

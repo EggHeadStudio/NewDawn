@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { defaultAppearance, type CharacterAppearance } from './appearance';
 import { createCharacter, shapedGeometry } from './characters';
+import type { PlanetaryProjectile } from './planetary-projectile';
 
 export type EnemyKind = 'raider' | 'undead' | 'necromancer' | 'armored' | 'nightcreature' | 'champion';
 
@@ -20,12 +21,15 @@ export function enemyIntent(kind: EnemyKind, distance: number, ready: boolean) {
   return { movement, attack: ready && distance <= profile.reach };
 }
 
-export function stepEnemyProjectile(position: THREE.Vector3, velocity: THREE.Vector3, remaining: number, dt: number,
+export function stepEnemyProjectile(position: THREE.Vector3, motion: PlanetaryProjectile, remaining: number, dt: number,
   player: THREE.Vector3, blocked: (point: THREE.Vector3) => boolean) {
-  position.addScaledVector(velocity, dt);
+  const previous = position.clone();
+  const next = motion.step(dt);
+  position.set(next.x, next.y, next.z);
   remaining -= dt;
   const obstruction = blocked(position);
-  const hit = !obstruction && position.distanceTo(player) < 0.75;
+  const closest = new THREE.Line3(previous, position).closestPointToPoint(player, true, new THREE.Vector3());
+  const hit = !obstruction && closest.distanceTo(player) < 0.75;
   return { remaining, hit, finished: hit || obstruction || remaining <= 0 };
 }
 

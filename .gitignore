@@ -157,3 +157,19 @@ vite.config.ts.timestamp-*
 .nx/cache
 .nx/workspace-data
 .nx/migrate-runs
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# Local IDE files
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Local credentials
+*.pem
+*.p12
+*.key
+service-account*.json
+firebase-adminsdk*.json

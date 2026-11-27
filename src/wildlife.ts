@@ -116,6 +116,7 @@ export function updateWildlife(
   animals: AnimalState[], dt: number, seed: number, player: ActorPosition,
   heightAt: (x: number, z: number) => number,
   damagePlayer: (damage: number) => void,
+  move: typeof movePlanetPosition = movePlanetPosition,
 ) {
   for (const animal of animals) {
     if (animal.health <= 0) continue;
@@ -162,7 +163,7 @@ export function updateWildlife(
     }
     if (animal.behavior !== 'rest') {
       const speed = speeds[animal.species] * (animal.behavior === 'wander' ? 0.35 : 1);
-      const next = movePlanetPosition(animal, animal.heading * 180 / Math.PI, speed * dt, animal.geographic);
+      const next = move(animal, animal.heading * 180 / Math.PI, speed * dt, animal.geographic);
       if (distanceBetween(next, { x: animal.homeX, z: animal.homeZ }) > 46) {
         animal.heading += Math.PI * 0.6;
       } else if (heightAt(next.x, next.z) > 0.1) {

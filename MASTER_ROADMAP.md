@@ -14,7 +14,7 @@ Model dawn, day, dusk and night; four seasons; rain, storms, snow and wind; atmo
 
 ## 3. Characters and visuals
 
-Deliver premium stylized human characters rather than Playmobil-like figures, using authored rigged GLB/GLTF, smooth animation and mobile optimization. Support masculine and feminine variation, faces, bodies, skin tones, hairstyles, beards and accessories; Viking-inspired early outfits, profession-specific, industrial and modern clothing; real equipment and armor; customization and persistent identity. NPCs and enemies require comparable visual quality.
+Deliver grounded realistic human characters rather than Playmobil-like figures, using authored rigged GLB/GLTF, smooth animation and mobile optimization. Support masculine and feminine variation, faces, bodies, skin tones, hairstyles, beards and accessories; modern and post-apocalyptic default outfits, profession-specific, industrial and optional historical clothing; real equipment and armor; customization and persistent identity. NPCs and enemies require comparable visual quality.
 
 ## 4. Enemies and combat
 
@@ -73,7 +73,16 @@ Provide excellent mouse/keyboard and touch controls, contextual A/B actions, pra
 
 ## Current priority
 
-Batch 005C is in progress. Player, rover, Mira and wildlife now use great-circle movement; canonical positions persist for player/rover and optionally Mira/animals. The Atlas samples the generated world biome source, and streamed vegetation has initial latitude-aware forest families and desert cactus. Projected x/z remains the rendering/collision frame. Next complete and test a shared local-tangent entity/render transform across terrain, structures and collision before bounded hierarchical terrain LOD. Continue environment visuals and other approved 005C vertical slices without claiming planet acceptance. Preserve the unfinished mining-to-manufacturing and research loop, authored-character limitations, and all documented art requirements.
+The approved Batch 005D-A3.2 continues Grounded Realism and supersedes the earlier stylized visual target. Five authored tree prototypes include experimental selectively placed mature broadleaf and pine visuals; corrected plant alpha, a shrub, six PBR terrain families, preliminary vegetation LOD and material impacts are integrated. Local foliage sightline clearance, weather/daylight/altitude-sensitive haze, multisampled alpha-to-coverage and a stronger Low-quality vegetation reduction are also implemented but have not completed device/art acceptance. Current mature-tree captures still show sparse crowns. A bounded sustained benchmark and initial starfield are available, but convincing mature forests, ground vegetation, cinematic quality, sky visual acceptance, quality-tier profiling and release validation remain incomplete. Continue the approved A3.2 checkpoints before starting a future major milestone; see the status and test report for evidence. The following planetary work remains mandatory and must not be represented as complete:
+
+Batch 005C-P3 is in progress. Player, rover and nearby actors step in a relocating local tangent frame; distant actors retain great-circle movement. Canonical positions persist for player/rover and optionally Mira/animals. Terrain and construction have staged tangent geometry paths, but they are not enabled in gameplay; player/rover collision, line-of-sight and rendering still use projected x/z. Complete and test a shared local-tangent entity/render transform across terrain, structures and collision before bounded hierarchical terrain LOD. The Atlas samples generated biomes, and streamed vegetation has initial latitude-aware forest families and desert cactus; do not claim planet acceptance. Preserve the unfinished mining-to-manufacturing and research loop, authored-character limitations, and all documented art requirements.
+
+### Batch 005C-P2C mobile HUD acceptance
+
+- Keep the minimap in a sensible corner and move resource counts into a compact, optionally expandable group that does not sit beneath the map or block the gameplay center. Keep the joystick at bottom left and A/B at bottom right; keep secondary actions in the Tool Hub.
+- Use responsive safe-area positioning, translucent readable panels, touch-sized controls and non-obstructive notifications. Expanded Build, Terrain, Road, Paint, Inventory and Atlas interfaces must fit, scroll where needed and retain reachable close/exit controls.
+- Verify actual running-game layouts and critical bounding-box intersections, horizontal overflow, scrolling, closing and simultaneous joystick/action touch in Playwright at 360×800, 390×844, 430×932, 844×390, 932×430 and 1024×768. Save before/after gameplay and expanded-panel screenshots under `art-review/batch-005c-p2c/mobile-ui/`.
+- Browser emulation is not physical-device acceptance; report the distinction and retain device testing as an open limitation.
 
 ## Batch 004C permanent requirements
 

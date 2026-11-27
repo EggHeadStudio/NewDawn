@@ -131,7 +131,7 @@ export function attachAuthoredCharacter(root: THREE.Group, appearance: Character
       if (index === 1) {
         const hand = model.getObjectByName('hand_r');
         if (!hand) throw new Error('Character outfit is missing the right hand bone');
-        for (const kind of ['chop', 'mine', 'weapon']) {
+        for (const kind of ['chop', 'mine', 'weapon', 'stick']) {
           const fallback = root.getObjectByName(`tool-${kind}`);
           if (!fallback) continue;
           const tool = fallback.clone();
@@ -165,13 +165,13 @@ export function attachAuthoredCharacter(root: THREE.Group, appearance: Character
   });
 }
 
-export function updateAuthoredCharacter(root: THREE.Group, dt: number, movement: number, running: boolean, action: Action, carrying: boolean) {
+export function updateAuthoredCharacter(root: THREE.Group, dt: number, movement: number, running: boolean, action: Action, carrying: boolean, attackTool: 'weapon' | 'chop' | 'stick' | null = 'weapon') {
   const avatar = root.userData.authoredAvatar as Avatar | undefined;
   if (!avatar || avatar.disposed || !avatar.mixers.length) return false;
   const name = authoredAnimation(movement, running, action, carrying);
   for (const [kind, tool] of avatar.tools) {
     tool.visible = root.userData.enemy ? kind === 'weapon'
-      : kind === (action === 'attack' ? 'weapon' : action === 'build' ? 'chop' : action);
+      : kind === (action === 'attack' ? attackTool : action === 'build' ? 'chop' : action);
   }
   if (name !== avatar.current) {
     if (avatar.current) avatar.actions.get(avatar.current)?.forEach(previous => previous.fadeOut(0.16));

@@ -44,6 +44,10 @@ export function attachHandTorch(character: THREE.Group, torch: THREE.Group) {
   torch.quaternion.copy(handRotation.invert());
 }
 
+export function torchFirePosition(fire: THREE.Object3D, renderOrigin: THREE.Vector3) {
+  return fire.getWorldPosition(new THREE.Vector3()).add(renderOrigin);
+}
+
 export function createTorchPost() {
   const group = new THREE.Group();
   const wood = new THREE.MeshStandardMaterial({ color: '#70503a', roughness: 1 });
@@ -76,17 +80,20 @@ export class FireSparks {
     scene.add(this.points);
   }
 
-  update(origins: readonly THREE.Vector3[], time: number) {
+  update(origins: readonly THREE.Vector3[], time: number, wind = 0) {
     const count = Math.min(5, origins.length);
     this.points.visible = count > 0;
     this.geometry.setDrawRange(0, count * 4);
+    if (count === 0) return;
+    const origin = origins[0];
+    this.points.position.copy(origin);
     for (let source = 0; source < count; source++) {
       for (let spark = 0; spark < 4; spark++) {
         const phase = (time * 0.7 + spark * 0.25 + source * 0.13) % 1;
         const offset = (source * 4 + spark) * 3;
-        this.positions[offset] = origins[source].x + Math.sin(spark * 8 + time * 2) * phase * 0.12;
-        this.positions[offset + 1] = origins[source].y + phase * 0.6;
-        this.positions[offset + 2] = origins[source].z + Math.cos(spark * 7 + time * 2) * phase * 0.12;
+        this.positions[offset] = origins[source].x - origin.x + Math.sin(spark * 8 + time * 2) * phase * 0.12 - wind * phase * 0.12;
+        this.positions[offset + 1] = origins[source].y - origin.y + phase * 0.6;
+        this.positions[offset + 2] = origins[source].z - origin.z + Math.cos(spark * 7 + time * 2) * phase * 0.12 - wind * phase * 0.04;
       }
     }
     this.geometry.attributes.position.needsUpdate = true;

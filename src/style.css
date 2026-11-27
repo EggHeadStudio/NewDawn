@@ -6,6 +6,9 @@ button { cursor: pointer; touch-action: manipulation; }
 #hud { user-select: none; }
 #game { width: 100%; height: 100%; display: block; touch-action: none; }
 .hidden { display: none !important; }
+.performance-monitor { position: fixed; z-index: 31; top: max(75px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); width: min(390px, calc(100vw - 24px)); max-height: 45dvh; overflow-y: auto; padding: 10px; border: 1px solid #728b79; border-radius: 10px; background: rgba(8, 29, 30, .94); color: #edf4df; font-size: 11px; user-select: text; touch-action: pan-y; }
+.performance-monitor pre { margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 10px/1.45 monospace; }
+.performance-monitor button { min-height: 36px; margin-right: 6px; border: 1px solid #728b79; border-radius: 6px; color: #edf4df; background: #244b45; }
 .screen { position: fixed; inset: 0; z-index: 20; display: none; background: linear-gradient(135deg, rgba(18,48,46,.18), rgba(13,35,40,.72)), radial-gradient(circle at 70% 30%, #d6a85f 0 2%, #87a96a 16%, #274f4a 55%, #102d32 100%); }
 .screen.active { display: block; }
 .menu-vignette { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(7,24,28,.82), transparent 58%), linear-gradient(0deg, rgba(7,24,28,.55), transparent 40%); }
@@ -18,6 +21,7 @@ button { cursor: pointer; touch-action: manipulation; }
 .menu-card label { display: block; margin-bottom: 13px; font-size: 11px; letter-spacing: 1px; color: #aebdac; }
 .menu-card p { color: #c2d4c3; font-size: 11px; line-height: 1.5; }
 .menu-card input { width: 100%; margin-top: 6px; border: 1px solid rgba(215,229,208,.16); border-radius: 8px; padding: 10px 12px; color: white; background: rgba(5,24,26,.55); outline: none; }
+.menu-card select { width: 100%; min-height: 40px; margin-top: 6px; padding: 8px; border: 1px solid rgba(215,229,208,.16); border-radius: 8px; color: white; background: #173231; }
 .outfits { display: grid; grid-template-columns: repeat(3,1fr); gap: 6px; margin-top: 7px; }
 .outfits button, .secondary { border: 1px solid rgba(217,231,205,.14); color: #dfe8d5; background: rgba(255,255,255,.07); }
 .outfits button { padding: 8px 4px; border-radius: 7px; font-size: 11px; }
@@ -56,9 +60,11 @@ button { cursor: pointer; touch-action: manipulation; }
 .objective span { display: block; font-size: 8px; letter-spacing: 2px; color: #d9b56b; }
 .objective strong { display: block; margin-top: 2px; font-size: 12px; }
 .resources { position: fixed; left: max(18px, env(safe-area-inset-left)); bottom: max(20px, env(safe-area-inset-bottom)); z-index: 6; display: flex; gap: 6px; }
-.resources div { height: 40px; min-width: 58px; display: flex; align-items: center; gap: 7px; border: 1px solid rgba(239,244,226,.16); border-radius: 9px; padding: 6px 10px; background: rgba(10,38,40,.72); }
-.resources b { font-size: 16px; }
-.resources span { font-weight: 800; }
+.resource-toggle { display: none; }
+.resource-counts { display: flex; gap: 6px; }
+.resource-counts > div { height: 40px; min-width: 58px; display: flex; align-items: center; gap: 7px; border: 1px solid rgba(239,244,226,.16); border-radius: 9px; padding: 6px 10px; background: rgba(10,38,40,.72); }
+.resource-counts b { font-size: 16px; }
+.resource-counts span { font-weight: 800; }
 #controlsHint { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 5; border-radius: 20px; padding: 8px 13px; font-size: 10px; color: #d7e2d2; background: rgba(10,38,40,.55); }
 .quickbar { position: fixed; right: 18px; bottom: 18px; z-index: 7; display: flex; gap: 6px; }
 .quickbar button { width: 54px; height: 54px; border: 1px solid rgba(239,244,226,.18); border-radius: 12px; color: #edf4df; background: rgba(10,38,40,.78); font-size: 19px; }
@@ -120,7 +126,7 @@ button { cursor: pointer; touch-action: manipulation; }
 #paintErase { grid-column: span 3; background: #244b45; }
 .jump-button { display: none; }
 .tool-hub { position: fixed; z-index: 33; right: max(12px, env(safe-area-inset-right)); bottom: calc(max(92px, env(safe-area-inset-bottom)) + 18px); width: min(300px, calc(100vw - 24px)); max-height: min(430px, calc(100dvh - 130px)); overflow: auto; border: 1px solid rgba(232,239,218,.28); border-radius: 16px; padding: 10px; background: rgba(10,38,40,.94); box-shadow: 0 12px 36px rgba(4,20,22,.38); }
-.tool-hub header { display: flex; align-items: center; justify-content: space-between; padding: 4px 4px 8px; font-size: 11px; letter-spacing: 2px; }
+.tool-hub header { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; padding: 4px 4px 8px; background: rgba(10,38,40,.96); font-size: 11px; letter-spacing: 2px; }
 .tool-hub header button { width: 40px; height: 40px; border: 0; border-radius: 50%; color: white; background: rgba(255,255,255,.08); }
 .tool-hub-grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 6px; }
 .tool-hub-grid button { min-height: 58px; border: 1px solid rgba(232,239,218,.18); border-radius: 10px; color: #edf4df; background: rgba(255,255,255,.06); font-size: 18px; }
@@ -161,8 +167,6 @@ button { cursor: pointer; touch-action: manipulation; }
   .quickbar [data-tool="axe"] { display: none; }
   .jump-button { display: grid; position: fixed; z-index: 9; right: max(170px, env(safe-area-inset-right)); bottom: max(20px, env(safe-area-inset-bottom)); width: 54px; height: 54px; place-items: center; border: 1px solid rgba(235,242,220,.32); border-radius: 50%; color: white; background: rgba(10,38,40,.48); font-size: 18px; }
   .jump-button span { display: block; font-size: 8px; }
-  .resources { bottom: max(16px, env(safe-area-inset-bottom)); left: calc(max(26px, env(safe-area-inset-left)) + 98px); }
-  .resources div { min-width: 48px; }
   #joystick { display: block; position: fixed; z-index: 8; left: 26px; bottom: 70px; width: 92px; height: 92px; border: 2px solid rgba(235,242,220,.32); border-radius: 50%; background: rgba(10,38,40,.28); touch-action: none; }
   #stick { position: absolute; left: 26px; top: 26px; width: 40px; height: 40px; border-radius: 50%; background: rgba(233,240,215,.48); box-shadow: 0 3px 10px rgba(4,20,22,.25); }
   .mobile-actions { display: flex; position: fixed; z-index: 8; right: 80px; bottom: 26px; gap: 10px; }
@@ -171,6 +175,7 @@ button { cursor: pointer; touch-action: manipulation; }
   .quickbar { display: flex; right: max(8px, env(safe-area-inset-right)); bottom: max(104px, env(safe-area-inset-bottom)); }
   .quickbar button { width: 44px; height: 44px; }
   .mobile-actions { right: max(12px, env(safe-area-inset-right)); bottom: max(20px, env(safe-area-inset-bottom)); }
+  .mobile-actions button { touch-action: none; }
   #joystick { left: max(26px, env(safe-area-inset-left)); bottom: max(70px, env(safe-area-inset-bottom)); }
   #minimap { width: 110px; height: 110px; top: calc(max(16px, env(safe-area-inset-top)) + 56px); }
   .objective { top: calc(max(16px, env(safe-area-inset-top)) + 46px); }
@@ -196,10 +201,7 @@ button { cursor: pointer; touch-action: manipulation; }
   .time-card { min-width: 92px; padding: 5px 8px; }
   .time-card span { font-size: 7px; letter-spacing: 0; }
   #minimap { top: calc(max(16px, env(safe-area-inset-top)) + 96px); left: max(10px, env(safe-area-inset-left)); }
-  .resources { top: calc(max(16px, env(safe-area-inset-top)) + 212px); bottom: auto; left: max(10px, env(safe-area-inset-left)); gap: 3px; }
-  #hud.building .resources { top: calc(max(16px, env(safe-area-inset-top)) + 228px); }
-  .resources div { height: 32px; min-width: 42px; padding: 4px 7px; }
-  .objective { min-width: 190px; }
+  .objective { left: auto; right: max(10px, env(safe-area-inset-right)); transform: none; min-width: 0; max-width: calc(100vw - 150px); }
   .character-card { grid-template-columns: 1fr; overflow-y: auto; }
   .character-preview-wrap { min-height: 220px; padding: 12px; }
   #characterPreview { height: 150px; min-height: 150px; flex: none; }
@@ -211,4 +213,71 @@ button { cursor: pointer; touch-action: manipulation; }
   #minimap { width: 80px; height: 80px; }
   .objective { top: max(14px, env(safe-area-inset-top)); }
   .menu-card { top: 8vh; left: auto; right: 5vw; max-height: 84vh; }
+}
+
+@media (pointer: coarse), (max-width: 800px) {
+  .resources { left: max(12px, env(safe-area-inset-left)); bottom: max(12px, env(safe-area-inset-bottom)); gap: 0; }
+  .resource-toggle { display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 5px 9px; border: 1px solid rgba(239,244,226,.24); border-radius: 10px; color: #edf4df; background: rgba(10,38,40,.82); backdrop-filter: blur(8px); font-size: 11px; font-weight: 800; white-space: nowrap; }
+  .resource-chevron { margin-left: 2px; color: #d9b56b; }
+  .resource-counts { display: none; }
+  .resources.expanded .resource-counts { position: fixed; top: calc(max(16px, env(safe-area-inset-top)) + 56px); left: calc(max(18px, env(safe-area-inset-left)) + 122px); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; width: min(220px, calc(100vw - max(18px, env(safe-area-inset-left)) - max(12px, env(safe-area-inset-right)) - 140px)); padding: 6px; border: 1px solid rgba(239,244,226,.2); border-radius: 10px; background: rgba(10,38,40,.86); backdrop-filter: blur(10px); }
+  .resource-counts > div { width: 100%; min-width: 0; height: 32px; gap: 6px; padding: 4px 7px; font-size: 11px; }
+  .resource-counts b { font-size: 13px; }
+  #joystick { left: max(16px, env(safe-area-inset-left)); bottom: calc(max(20px, env(safe-area-inset-bottom)) + 50px); }
+  .mobile-actions { right: max(12px, env(safe-area-inset-right)); bottom: max(20px, env(safe-area-inset-bottom)); }
+  .quickbar { right: max(8px, env(safe-area-inset-right)); bottom: calc(max(20px, env(safe-area-inset-bottom)) + 84px); }
+  .jump-button { right: max(170px, env(safe-area-inset-right)); bottom: max(20px, env(safe-area-inset-bottom)); }
+  .tool-hub { top: calc(max(16px, env(safe-area-inset-top)) + 56px); right: max(12px, env(safe-area-inset-right)); bottom: auto; width: min(300px, calc(100vw - 24px)); max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 56px - max(20px, env(safe-area-inset-bottom)) - 154px); overflow-y: auto; padding: 8px; background: rgba(10,38,40,.88); }
+  .tool-hub header { padding: 2px 2px 6px; }
+  .tool-hub-grid { gap: 4px; }
+  .tool-hub-grid button { min-width: 44px; min-height: 48px; }
+  #hud.tool-hub-open .quickbar { visibility: hidden; }
+  .panel { top: calc(max(16px, env(safe-area-inset-top)) + 62px); right: max(12px, env(safe-area-inset-right)); max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 62px - max(20px, env(safe-area-inset-bottom)) - 136px); width: min(280px, calc(100vw - 24px)); background: rgba(13,43,44,.88); }
+  .panel .close { position: sticky; top: 0; float: right; z-index: 31; margin: -12px -12px -42px 0; }
+  .tool-toolbar { top: calc(max(16px, env(safe-area-inset-top)) + 56px); right: max(12px, env(safe-area-inset-right)); max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 56px - max(20px, env(safe-area-inset-bottom)) - 136px); overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; background: rgba(10,38,40,.88); }
+  .toast { z-index: 10; top: calc(max(16px, env(safe-area-inset-top)) + 174px); right: auto; bottom: auto; left: max(12px, env(safe-area-inset-left)); width: max-content; max-width: calc(100vw - 24px); transform: translateY(20px); }
+  .toast.visible { transform: translateY(0); }
+  .panel:not(.hidden) ~ #toast, .tool-hub:not(.hidden) ~ #toast, .tool-toolbar:not(.hidden) ~ #toast, .placement-toolbar:not(.hidden) ~ #toast, .atlas-panel:not(.hidden) ~ #toast { display: none; }
+}
+
+@media (orientation: portrait) and (max-width: 600px) and (pointer: coarse) {
+  .resources.expanded .resource-counts { top: calc(max(16px, env(safe-area-inset-top)) + 96px); left: calc(max(10px, env(safe-area-inset-left)) + 122px); width: min(300px, calc(100vw - max(10px, env(safe-area-inset-left)) - max(12px, env(safe-area-inset-right)) - 132px)); }
+  .tool-hub { top: calc(max(16px, env(safe-area-inset-top)) + 96px); right: max(12px, env(safe-area-inset-right)); left: calc(max(10px, env(safe-area-inset-left)) + 122px); width: min(300px, calc(100vw - max(10px, env(safe-area-inset-left)) - max(12px, env(safe-area-inset-right)) - 132px)); max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 96px - max(20px, env(safe-area-inset-bottom)) - 40px); }
+  .tool-hub-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .panel { top: calc(max(16px, env(safe-area-inset-top)) + 214px); max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 214px - max(20px, env(safe-area-inset-bottom)) - 186px); }
+  .tool-toolbar { top: calc(max(16px, env(safe-area-inset-top)) + 214px); max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 214px - max(20px, env(safe-area-inset-bottom)) - 186px); }
+  .toast { top: calc(max(16px, env(safe-area-inset-top)) + 214px); }
+}
+
+@media (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
+  .resources.expanded .resource-counts { top: calc(max(16px, env(safe-area-inset-top)) + 56px); left: calc(max(18px, env(safe-area-inset-left)) + 92px); }
+  .tool-hub { top: calc(max(16px, env(safe-area-inset-top)) + 56px); left: auto; right: max(12px, env(safe-area-inset-right)); width: min(300px, calc(100vw - 24px)); max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 56px - max(20px, env(safe-area-inset-bottom)) - 154px); }
+  .tool-hub-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .panel { top: calc(max(16px, env(safe-area-inset-top)) + 56px); max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 56px - max(20px, env(safe-area-inset-bottom)) - 136px); }
+  .tool-toolbar { top: calc(max(16px, env(safe-area-inset-top)) + 56px); max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 56px - max(20px, env(safe-area-inset-bottom)) - 136px); }
+  .toast { top: calc(max(16px, env(safe-area-inset-top)) + 142px); }
+}
+
+@media (pointer: coarse), (max-width: 800px) {
+  .mobile-actions { display: grid; grid-template: repeat(3, 60px) / repeat(3, 60px); gap: 2px; right: max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); }
+  .mobile-actions button:not(#exitVehicle) { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; width: 60px; height: 60px; padding: 3px; border: 1px solid rgba(226,240,229,.36); border-radius: 20px; background: rgba(9,31,34,.64); box-shadow: inset 0 1px rgba(255,255,255,.1), 0 3px 12px rgba(0,0,0,.2); backdrop-filter: blur(7px); touch-action: none; }
+  .mobile-actions button:not(#exitVehicle):active { background: rgba(86,132,105,.85); border-color: #e4efd7; transform: scale(.95); }
+  .mobile-actions button strong { font: 800 20px Georgia, serif; }
+  .mobile-actions button span { font: 600 9px sans-serif; color: #e1ece0; }
+  .mobile-actions svg { width: 25px; height: 25px; fill: none; stroke: #f0f5e8; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .pad-jump { grid-area: 1 / 2; }
+  .pad-a { grid-area: 2 / 1; }
+  .pad-b { grid-area: 2 / 3; }
+  .pad-weapon { grid-area: 3 / 2; }
+  #weaponAmmo { position: absolute; top: 3px; right: 3px; min-width: 18px; padding: 2px 3px; border-radius: 10px; background: #d7bd80; color: #172f2d; font: 700 10px sans-serif; }
+  #exitVehicle:not(.hidden) { position: absolute; right: 0; bottom: calc(100% + 5px); width: 54px; height: 40px; border-radius: 12px; }
+  .quickbar { bottom: calc(max(12px, env(safe-area-inset-bottom)) + 192px); }
+  body:has(.panel:not(.hidden)) .quickbar, body:has(.tool-toolbar:not(.hidden)) .quickbar { display: none; }
+  .panel, .tool-toolbar, .placement-toolbar { max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 62px - max(12px, env(safe-area-inset-bottom)) - 192px); }
+  .tool-hub { max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 56px - max(12px, env(safe-area-inset-bottom)) - 192px); }
+}
+
+@media (orientation: portrait) and (max-width: 600px) and (pointer: coarse) {
+  .panel, .tool-toolbar { max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 214px - max(12px, env(safe-area-inset-bottom)) - 192px); }
+  .tool-hub { max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 96px - max(12px, env(safe-area-inset-bottom)) - 192px); }
 }

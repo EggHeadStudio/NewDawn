@@ -13,6 +13,7 @@ import { isSurfacePaint, type SurfacePaint } from './paint';
 import type { RoadSegment } from './roads';
 import { geographicDistanceMeters, isAtlasState, type AtlasState, type GeographicPosition } from './geography';
 import { PLANET_WIDTH, planetPositionToGeographic } from './planet';
+import { isOnboardingState, type OnboardingState } from './onboarding';
 
 export interface SaveData {
   version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
@@ -38,6 +39,7 @@ export interface SaveData {
   atlas?: AtlasState;
   stones?: number;
   selectedWeapon?: 'fists' | 'stick' | 'axe' | 'stones';
+  onboarding?: OnboardingState;
   depleted?: string[];
   minerals?: MineralInventory;
   mining?: Record<string, number>;
@@ -95,9 +97,10 @@ export function isSaveData(value: unknown): value is SaveData {
   if (!isNumber(value.calendar.minute) || value.calendar.minute < 0 || value.calendar.minute >= 1440
     || !isNumber(value.calendar.day) || value.calendar.day < 1
     || (value.calendar.speed !== undefined && (!isNumber(value.calendar.speed) || value.calendar.speed < 0.5 || value.calendar.speed > 8))) return false;
-  if (!Object.entries(value.terrain).every(([key, n]) => /^-?\d+,-?\d+$/.test(key) && isNumber(n) && n >= -1.8 && n <= 0)) return false;
-  const coordinateLimit = value.version >= 6 ? PLANET_WIDTH * 2 : 48;
   const version = value.version;
+  if (!Object.entries(value.terrain).every(([key, n]) => /^-?\d+,-?\d+$/.test(key) && isNumber(n)
+    && n >= -1.8 && n <= (version >= 10 ? 8 : 0))) return false;
+  const coordinateLimit = value.version >= 6 ? PLANET_WIDTH * 2 : 48;
   if (!value.buildings.every(b => isObject(b) && typeof b.kind === 'string'
     && Object.hasOwn(buildingCosts, b.kind) && isPosition(b, coordinateLimit) && isNumber(b.y) && isNumber(b.rotation)
     && (b.charge === undefined || (isNumber(b.charge) && b.charge >= 0 && b.charge <= 20))
@@ -175,6 +178,7 @@ export function isSaveData(value: unknown): value is SaveData {
   }
   if (value.stones !== undefined && (!isNumber(value.stones) || !Number.isInteger(value.stones) || value.stones < 0 || value.stones > 100000)) return false;
   if (value.selectedWeapon !== undefined && !['fists', 'stick', 'axe', 'stones'].includes(String(value.selectedWeapon))) return false;
+  if (value.onboarding !== undefined && !isOnboardingState(value.onboarding)) return false;
   if (value.version >= 8 && (!isMineralInventory(value.minerals) || !isIngots(value.ingots, value.version >= 9)
     || typeof value.ironPickaxe !== 'boolean'
     || (value.ironPickaxe && (!Array.isArray(value.tools) || !value.tools.includes('pickaxe')))

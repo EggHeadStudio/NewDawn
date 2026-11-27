@@ -12,6 +12,15 @@ async function save(page: Page) {
   await page.locator('#resumeGame').click();
 }
 
+async function waitForNature(page: Page) {
+  await expect.poll(async () => page.evaluate(() => {
+    const state = (window as Window & { __newDawnState: () => {
+      trees: Array<{ authored: boolean }>; groundArt: { stones: number; grass: number };
+    } }).__newDawnState();
+    return state.trees.some(tree => tree.authored) && state.groundArt.stones > 0 && state.groundArt.grass > 0;
+  }), { timeout: 30000 }).toBe(true);
+}
+
 type SavedWorld = { version: number; seed: number; player: { x: number; z: number }; resources: { wood: number };
   terrain: Record<string, number>; npcState: { recruited: boolean }; buildings: Array<{ kind: string; x: number; z: number }>;
   minerals: { ironOre: number; sand: number; coal: number }; ingots: { iron: number; copper: number; glass?: number };
@@ -191,17 +200,18 @@ test('crosses the longitude seam and retains a nearby settlement', async ({ page
   expect(Math.abs((await readRecord(page, 'primary')).buildings[0].x - saved.player.x)).toBeLessThan(20);
 });
 
-test('moves and saves at real meter scale at 60 degrees latitude', async ({ page }) => {
+for (const latitude of [60, 85, -85]) {
+test(`moves and saves at real meter scale at ${latitude} degrees latitude`, async ({ page }) => {
   await page.goto('./');
   await page.locator('#newGame').click();
   await save(page);
   const original = await readRecord(page, 'primary');
   let start: ReturnType<typeof planetPositionToGeographic> | undefined;
   for (let longitude = -180; longitude < 180; longitude += 5) {
-    const projected = geographicToPlanetPosition(60, longitude);
+    const projected = geographicToPlanetPosition(latitude, longitude);
     const elevation = terrainHeight(projected.x, projected.z, original.seed);
     if (elevation > 1) {
-      start = { ...planetPositionToGeographic(projected.x, projected.z, elevation), latitude: 60, longitude };
+      start = { ...planetPositionToGeographic(projected.x, projected.z, elevation), latitude, longitude };
       break;
     }
   }
@@ -232,6 +242,7 @@ test('moves and saves at real meter scale at 60 degrees latitude', async ({ page
   await page.reload();
   await page.locator('#continueGame').click();
   await expect(page.locator('#pauseButton')).toBeVisible();
+  await waitForNature(page);
   await page.keyboard.press('e');
   await page.keyboard.down('w');
   await page.waitForTimeout(1400);
@@ -243,6 +254,7 @@ test('moves and saves at real meter scale at 60 degrees latitude', async ({ page
   await page.reload();
   await page.locator('#continueGame').click();
   await expect(page.locator('#pauseButton')).toBeVisible();
+  await waitForNature(page);
   const footStart = driven.planetPositions!.player;
   await page.keyboard.down('w');
   await page.waitForTimeout(1400);
@@ -254,6 +266,9 @@ test('moves and saves at real meter scale at 60 degrees latitude', async ({ page
   const distance = geographicDistanceMeters(footStart, moved.planetPositions!.player);
   expect(distance).toBeGreaterThan(2);
   expect(distance).toBeLessThan(9);
+  const review = join('art-review', 'batch-005c-p3');
+  await mkdir(review, { recursive: true });
+  await page.screenshot({ path: join(review, `frame-movement-${latitude}.png`) });
   await page.reload();
   await page.locator('#continueGame').click();
   await expect(page.locator('#pauseButton')).toBeVisible();
@@ -262,6 +277,7 @@ test('moves and saves at real meter scale at 60 degrees latitude', async ({ page
   expect(restored.planetPositions!.player.latitude).toBeCloseTo(moved.planetPositions!.player.latitude, 7);
   expect(restored.planetPositions!.player.longitude).toBeCloseTo(moved.planetPositions!.player.longitude, 7);
 });
+}
 
 test('Mira moves and reloads in canonical meters at high latitude', async ({ page }) => {
   await page.goto('./');

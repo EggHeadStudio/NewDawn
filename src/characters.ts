@@ -102,7 +102,7 @@ function braid(parent: THREE.Object3D, surface: Surface, x: number, z: number, l
   }
 }
 
-function heldTool(arm: THREE.Group, kind: 'chop' | 'mine' | 'weapon', wood: Surface, metal: Surface) {
+function heldTool(arm: THREE.Group, kind: 'chop' | 'mine' | 'weapon' | 'stick', wood: Surface, metal: Surface) {
   const tool = new THREE.Group();
   tool.name = `tool-${kind}`;
   tool.position.set(0, -0.25, 0.06);
@@ -120,6 +120,8 @@ function heldTool(arm: THREE.Group, kind: 'chop' | 'mine' | 'weapon', wood: Surf
     part(tool, new THREE.ExtrudeGeometry(bladeShape, { depth: 0.018, bevelEnabled: false }), metal, [0, 0, -0.009]);
     part(tool, new THREE.BoxGeometry(0.17, 0.028, 0.045), metal, [0, 0, 0]);
     part(tool, new THREE.SphereGeometry(0.032, 8, 6), metal, [0, -0.20, 0]);
+  } else if (kind === 'stick') {
+    part(tool, new THREE.CylinderGeometry(0.055, 0.025, 0.62, 7), wood, [0, 0.05, 0]);
   } else {
     part(tool, new THREE.CylinderGeometry(0.022, 0.03, 0.58, 6), wood, [0, -0.20, 0]);
     const head = part(tool, new THREE.BoxGeometry(kind === 'mine' ? 0.4 : 0.23, 0.1, 0.07), metal, [0.08, 0.18, 0]);
@@ -289,6 +291,7 @@ export function createCharacter(input: Outfit | CharacterAppearance = 'ember') {
       heldTool(elbow, 'chop', leather, metal);
       heldTool(elbow, 'mine', leather, metal);
       heldTool(elbow, 'weapon', leather, metal);
+      heldTool(elbow, 'stick', leather, metal);
     }
   }
   root.scale.y = { short: 0.9, medium: 1, tall: 1.1 }[appearance.height];

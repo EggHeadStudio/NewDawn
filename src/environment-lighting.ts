@@ -1,12 +1,23 @@
 import type { Weather } from './calendar';
+import type { VegetationQuality } from './vegetation-lod';
 
 function smoothstep(min: number, max: number, value: number) {
   const t = Math.max(0, Math.min(1, (value - min) / (max - min)));
   return t * t * (3 - 2 * t);
 }
 
-export function environmentLighting(minutes: number, weather: Weather) {
-  const solarHeight = Math.sin((minutes - 360) / 720 * Math.PI);
+export function atmosphericFogRange(start: number, end: number, renderDistance: number,
+  quality: VegetationQuality, weather: Weather, daylight: number, altitude: number) {
+  const qualityScale = { low: 0.72, medium: 1, high: 1.28 }[quality];
+  const weatherScale = { Clear: 1, Cloudy: 0.95, Rain: 0.86, Storm: 0.78, Snow: 0.84 }[weather];
+  const heightScale = 1 + Math.max(0, Math.min(1, altitude / 1200)) * 0.08;
+  const lightScale = 0.96 + 0.04 * Math.max(0, Math.min(1, daylight));
+  const far = Math.min(end * qualityScale * heightScale * lightScale, renderDistance * 24 + 12) * weatherScale;
+  return { near: Math.min(start * far / Math.max(end, 0.001), Math.max(0, far - 8)), far };
+}
+
+export function environmentLighting(minutes: number, weather: Weather, height?: number) {
+  const solarHeight = height ?? Math.sin((minutes - 360) / 720 * Math.PI);
   const daylight = smoothstep(-0.18, 0.22, solarHeight);
   const sunlight = Math.max(0, solarHeight) * smoothstep(-0.02, 0.16, solarHeight);
   const twilight = (1 - smoothstep(0.02, 0.3, Math.abs(solarHeight))) * smoothstep(-0.2, 0, solarHeight);
@@ -18,7 +29,7 @@ export function environmentLighting(minutes: number, weather: Weather) {
     daylight,
     twilight,
     sunlight: sunlight * 3 * cloud,
-    hemisphere: 0.24 * moon * (1 - daylight) + (0.5 + 1.45 * cloud) * daylight,
+    hemisphere: 0.55 * moon * (1 - daylight) + (0.5 + 1.45 * cloud) * daylight,
     moonlight: 0.34 * moon * (1 - daylight),
     skyBrightness: 0.045 * moon * (1 - daylight) + (0.39 + 0.31 * cloud) * daylight,
   };

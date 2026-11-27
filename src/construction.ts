@@ -1,4 +1,5 @@
 import { canAfford, spend, type Cost, type Inventory } from './gameplay';
+import { PLANET_WIDTH } from './planet';
 
 export type PieceKind = 'floor' | 'wall' | 'doorframe' | 'door' | 'windowframe' | 'window' | 'roof' | 'stairs';
 export type PieceRotation = 0 | 1 | 2 | 3;
@@ -172,8 +173,8 @@ export function isStructuralPiece(value: unknown): value is StructuralPiece {
   const p = value as Record<string, unknown>;
   if (typeof p.id !== 'string' || p.id.length < 1 || p.id.length > 100
     || typeof p.kind !== 'string' || !Object.hasOwn(pieceCosts, p.kind)
-    || typeof p.x !== 'number' || !Number.isInteger(p.x) || Math.abs(p.x) > 10000000
-    || typeof p.z !== 'number' || !Number.isInteger(p.z) || Math.abs(p.z) > 10000000
+    || typeof p.x !== 'number' || !Number.isInteger(p.x) || Math.abs(p.x) > PLANET_WIDTH * 2
+    || typeof p.z !== 'number' || !Number.isInteger(p.z) || Math.abs(p.z) > PLANET_WIDTH * 2
     || typeof p.y !== 'number' || !Number.isFinite(p.y) || Math.abs(p.y) > 10000
     || typeof p.level !== 'number' || !Number.isInteger(p.level) || p.level < 0 || p.level > 3
     || (p.rotation !== 0 && p.rotation !== 1 && p.rotation !== 2 && p.rotation !== 3)

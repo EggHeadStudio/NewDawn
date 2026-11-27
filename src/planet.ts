@@ -1,6 +1,6 @@
 import {
   EARTH_RADIUS_METERS, geographicBearing, geographicDistanceMeters, geographicToLocal,
-  moveGeographic, normalizeLatitude, normalizeLongitude, regionIdForCoordinates, type GeographicPosition,
+  localToGeographic, moveGeographic, normalizeLatitude, normalizeLongitude, regionIdForCoordinates, type GeographicPosition,
 } from './geography';
 
 export const CHUNK_SIZE = 24;
@@ -52,12 +52,37 @@ export function planetBearingDegrees(start: { x: number; z: number }, destinatio
   return geographicBearing(planetPositionToGeographic(start.x, start.z), planetPositionToGeographic(destination.x, destination.z));
 }
 
-export function planetOffset(start: { x: number; z: number }, destination: { x: number; z: number }) {
-  const offset = geographicToLocal(
-    planetPositionToGeographic(start.x, start.z),
-    planetPositionToGeographic(destination.x, destination.z),
-  );
+function tangentOffset(origin: GeographicPosition, position: GeographicPosition) {
+  const offset = geographicToLocal(origin, position);
   return { x: offset.x, z: -offset.z };
+}
+
+export class PlanetTangentFrame {
+  readonly origin: Readonly<GeographicPosition>;
+  private readonly reference: { x: number; z: number };
+
+  constructor(reference: { x: number; z: number }) {
+    this.reference = { ...reference };
+    this.origin = planetPositionToGeographic(reference.x, reference.z);
+  }
+
+  toLocal(position: { x: number; z: number }) {
+    const geographic = planetPositionToGeographic(position.x, position.z);
+    if (geographicDistanceMeters(this.origin, geographic) > Math.PI * EARTH_RADIUS_METERS / 2) {
+      throw new RangeError('Position is outside the local tangent hemisphere');
+    }
+    return tangentOffset(this.origin, geographic);
+  }
+
+  toPlanet(offset: { x: number; z: number }) {
+    const geographic = localToGeographic(this.origin, offset.x, -offset.z);
+    const projected = geographicToPlanetPosition(geographic.latitude, geographic.longitude);
+    return nearestPlanetPosition(projected.x, projected.z, this.reference.x, this.reference.z);
+  }
+}
+
+export function planetOffset(start: { x: number; z: number }, destination: { x: number; z: number }) {
+  return tangentOffset(planetPositionToGeographic(start.x, start.z), planetPositionToGeographic(destination.x, destination.z));
 }
 
 export function movePlanetPosition(

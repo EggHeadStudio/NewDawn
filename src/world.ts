@@ -1,16 +1,22 @@
 import * as THREE from 'three';
 import {
-  CHUNK_SIZE, PLANET_HEIGHT, PLANET_WIDTH, nearestPlanetPosition, planetCoordinates, planetDistanceMeters, planetHeight,
+  CHUNK_SIZE, PLANET_HEIGHT, PLANET_WIDTH, nearestPlanetPosition, planetCoordinates, planetDistanceMeters, planetHeight, PlanetTangentFrame,
 } from './planet';
 import { depositKinds, requiresPickaxe, type DepositKind } from './economy';
-import { obstructingTrees } from './tree-occlusion';
+import { FoliageClearance, obstructingTreeMeshes } from './tree-occlusion';
 import { climateZone } from './geography';
+import { createTerrainMaterial, TerrainTextures } from './terrain-material';
+import { NatureAssets, type NatureTreeVariant } from './nature-assets';
+import { GroundNatureAssets, type GroundAssetKind } from './ground-nature-assets';
+import { computeFullCoverBounds, coverCount, treeDetail, type TreeDetail, type VegetationQuality } from './vegetation-lod';
 
 export type Biome = 'ocean' | 'beach' | 'grass' | 'forest' | 'rock' | 'desert' | 'snow';
 export type VegetationFamily = 'none' | 'deciduous' | 'conifer' | 'cactus';
+export type TreeSpecies = 'pine' | 'spruce' | 'birch' | 'oak' | 'maple' | 'palm' | 'acacia' | 'tropical';
 type Season = 'Spring' | 'Summer' | 'Autumn' | 'Winter';
 type Resource = 'wood' | 'stone' | 'food';
-type Chunk = { x: number; z: number; objects: THREE.Object3D[]; terrain: THREE.Mesh; baseColors: Float32Array };
+type Chunk = { x: number; z: number; objects: THREE.Object3D[]; terrain: THREE.Mesh; water: THREE.Mesh;
+  terrainCoordinates: Float32Array; coverCoordinates: Map<THREE.InstancedMesh, Float32Array>; baseColors: Float32Array };
 
 export function seededNoise(x: number, z: number, seed: number) {
   const n = Math.sin(x * 127.1 + z * 311.7 + seed * 74.7) * 43758.5453;
@@ -57,6 +63,30 @@ export function vegetationFamilyAt(x: number, z: number, seed: number): Vegetati
   return 'none';
 }
 
+export function treeSpeciesAt(x: number, z: number, seed: number, family: 'deciduous' | 'conifer'): TreeSpecies {
+  const point = planetCoordinates(x, z);
+  const latitude = Math.abs(point.z / PLANET_HEIGHT * 180);
+  const variation = seededNoise(point.x, point.z, seed + 311);
+  if (family === 'conifer') return variation < 0.5 ? 'pine' : 'spruce';
+  if (latitude < 23.5 && Math.max(Math.abs(point.x), Math.abs(point.z)) > 72) {
+    return variation < 0.3 ? 'palm' : variation < 0.55 ? 'acacia' : 'tropical';
+  }
+  return variation < 0.3 ? 'birch' : variation < 0.65 ? 'oak' : 'maple';
+}
+
+export function terrainPalette(biome: Biome, climate: ReturnType<typeof climateZone>) {
+  if (biome === 'ocean') return '#287b86';
+  if (biome === 'beach') return '#d8c58a';
+  if (biome === 'desert' || climate === 'hot-desert' || climate === 'cold-desert') return '#c9ad72';
+  if (biome === 'rock') return '#77847b';
+  if (biome === 'snow' || climate === 'polar-ice') return '#d7e5df';
+  if (climate === 'tundra') return '#9da98b';
+  if (climate === 'alpine') return '#718084';
+  if (climate === 'tropical-rainforest') return '#356c48';
+  if (climate === 'boreal') return '#58745b';
+  return biome === 'forest' ? '#4d7d51' : '#70a65a';
+}
+
 export function safeSpawn(seed: number) {
   for (let radius = 0; radius <= 30; radius += 2) {
     for (let z = -radius; z <= radius; z += 2) {
@@ -74,9 +104,9 @@ export function safeSpawn(seed: number) {
 function disposeObject(object: THREE.Object3D) {
   object.traverse(child => {
     if (!(child instanceof THREE.Mesh)) return;
-    child.geometry.dispose();
+    if (!child.userData.natureSharedGeometry) child.geometry.dispose();
     const materials = Array.isArray(child.material) ? child.material : [child.material];
-    materials.forEach(material => material.dispose());
+    if (!child.userData.natureSharedMaterial) materials.forEach(material => material.dispose());
   });
 }
 
@@ -93,15 +123,42 @@ export class World {
   private mining = new Map<string, number>();
   private depositExclusions: Array<{ x: number; z: number; radius: number }> = [];
   private chunks = new Map<string, Chunk>();
-  private fadedTrees = new Set<THREE.Object3D>();
+  private readonly resourceCoordinates = new WeakMap<THREE.Object3D, { x: number; z: number }>();
+  private tangentFrame: PlanetTangentFrame | null = null;
+  private fadedTreeMeshes = new Map<THREE.Mesh, number>();
   private season: Season = 'Spring';
+  private readonly waterTime = { value: 0 };
+  private readonly waterWind = { value: 0 };
+  private readonly terrainTextures = typeof document === 'undefined' ? null : new TerrainTextures();
+  private readonly natureAssets: NatureAssets | null;
+  private readonly groundAssets: GroundNatureAssets | null;
   private radius: number;
+  private vegetationQuality: VegetationQuality = 'medium';
+  private treeFocus = { x: 0, z: 0 };
+  private lastTreeDetailFocus: { x: number; z: number } | null = null;
   readonly size = CHUNK_SIZE;
   readonly step = 1;
 
-  constructor(seed: number, renderDistance = 1) {
+  constructor(seed: number, renderDistance = 1, alphaCoverage = false) {
     this.seed = seed;
     this.radius = Math.max(1, Math.min(3, Math.floor(renderDistance)));
+    this.natureAssets = typeof document === 'undefined' ? null : new NatureAssets(family => {
+      for (const chunk of this.chunks.values()) {
+        for (const object of chunk.objects) {
+          if (object.userData.resource === 'wood' && object.userData.vegetationFamily === family) {
+            this.installTreeVisual(object);
+          }
+        }
+        this.colorChunk(chunk);
+      }
+      this.updateTreeDetail(true);
+    }, alphaCoverage);
+    this.groundAssets = this.natureAssets ? new GroundNatureAssets(this.natureAssets.wind, kind => {
+      for (const chunk of this.chunks.values()) {
+        chunk.objects.forEach(object => this.installGroundVisual(object, kind));
+        this.colorChunk(chunk);
+      }
+    }, alphaCoverage) : null;
     this.updateChunks(0, 0, true);
   }
 
@@ -109,7 +166,29 @@ export class World {
     this.radius = Math.max(1, Math.min(3, Math.floor(radius)));
   }
 
+  setVegetationQuality(quality: VegetationQuality) {
+    this.vegetationQuality = quality;
+    this.updateTreeDetail(true);
+  }
+
   get loadedChunkCount() { return this.chunks.size; }
+  get terrainReady() { return this.terrainTextures?.ready ?? false; }
+
+  vegetationStats() {
+    let near = 0;
+    let mid = 0;
+    let cover = 0;
+    for (const chunk of this.chunks.values()) {
+      for (const object of chunk.objects) {
+        if (object.userData.natureAuthored) {
+          if (object.userData.natureDetail === 'mid') mid++;
+          else near++;
+        }
+        if (object instanceof THREE.InstancedMesh && chunk.coverCoordinates.has(object)) cover += object.count;
+      }
+    }
+    return { near, mid, cover };
+  }
 
   rebase(dx: number, dz: number) {
     const shifted = new Map<string, Chunk>();
@@ -117,18 +196,24 @@ export class World {
       chunk.x += dx / CHUNK_SIZE;
       chunk.z += dz / CHUNK_SIZE;
       chunk.terrain.userData.chunk = `${chunk.x},${chunk.z}`;
-      chunk.objects.forEach(object => { object.position.x += dx; object.position.z += dz; });
+      chunk.objects.forEach(object => {
+        const coordinates = this.resourceCoordinates.get(object);
+        if (coordinates) { coordinates.x += dx; coordinates.z += dz; }
+        if (!this.tangentFrame) { object.position.x += dx; object.position.z += dz; }
+      });
+      if (this.tangentFrame) this.projectChunk(chunk);
       shifted.set(`${chunk.x},${chunk.z}`, chunk);
     }
     this.chunks = shifted;
   }
 
   updateChunks(x: number, z: number, immediate = false) {
+    this.treeFocus = { x, z };
     const cx = Math.floor(x / CHUNK_SIZE);
     const cz = Math.floor(z / CHUNK_SIZE);
     for (const [key, chunk] of this.chunks) {
       if (Math.abs(chunk.x - cx) <= this.radius && Math.abs(chunk.z - cz) <= this.radius) continue;
-      chunk.objects.forEach(object => { this.group.remove(object); this.fadedTrees.delete(object); disposeObject(object); });
+      chunk.objects.forEach(object => { this.group.remove(object); this.forgetFadedMeshes(object); disposeObject(object); });
       this.chunks.delete(key);
     }
     const missing: Array<{ x: number; z: number; distance: number }> = [];
@@ -139,6 +224,30 @@ export class World {
     }
     missing.sort((a, b) => a.distance - b.distance);
     for (const candidate of immediate ? missing : missing.slice(0, 1)) this.createChunk(candidate.x, candidate.z);
+    this.updateTreeDetail(missing.length > 0);
+  }
+
+  private updateTreeDetail(force: boolean) {
+    if (!this.natureAssets) return;
+    if (!force && this.lastTreeDetailFocus && planetDistanceMeters(this.treeFocus, this.lastTreeDetailFocus) < 1) return;
+    this.lastTreeDetailFocus = { ...this.treeFocus };
+    for (const chunk of this.chunks.values()) for (const object of chunk.objects) {
+      if (object.userData.natureAuthored) {
+        const current: TreeDetail = object.userData.natureDetail === 'mid' ? 'mid' : 'near';
+        const detail = treeDetail(planetDistanceMeters(this.resourceLocation(object), this.treeFocus), current, this.vegetationQuality);
+        if (detail !== current) this.natureAssets.setDetail(object, detail);
+        object.userData.natureDetail = detail;
+      } else if (object instanceof THREE.InstancedMesh
+        && (object.userData.groundCover === 'grass' || object.userData.groundCover === 'fern')) {
+        const coordinates = chunk.coverCoordinates.get(object);
+        if (!coordinates) throw new Error('Missing ground-cover ownership coordinates');
+        const current: TreeDetail = object.userData.coverDetail === 'mid' ? 'mid' : 'near';
+        const center = { x: chunk.x * CHUNK_SIZE + CHUNK_SIZE / 2, z: chunk.z * CHUNK_SIZE + CHUNK_SIZE / 2 };
+        const detail = treeDetail(planetDistanceMeters(center, this.treeFocus), current, this.vegetationQuality);
+        object.count = coverCount(coordinates.length / 2, detail, this.vegetationQuality);
+        object.userData.coverDetail = detail;
+      }
+    }
   }
 
   setSeason(season: Season) {
@@ -153,27 +262,42 @@ export class World {
     const geometry = chunk.terrain.geometry;
     const colors = geometry.attributes.color;
     const positions = geometry.attributes.position;
+    const blends = geometry.attributes.terrainBlend;
     const snow = new THREE.Color('#d7e5df');
     for (let i = 0; i < colors.count; i++) {
       const base = new THREE.Color().setRGB(chunk.baseColors[i * 3], chunk.baseColors[i * 3 + 1], chunk.baseColors[i * 3 + 2]);
       if (this.season === 'Winter' && positions.getY(i) > 0.45) base.lerp(snow, 0.75);
       colors.setXYZ(i, base.r, base.g, base.b);
+      const x = chunk.x * CHUNK_SIZE + CHUNK_SIZE / 2 + chunk.terrainCoordinates[i * 2];
+      const z = chunk.z * CHUNK_SIZE + CHUNK_SIZE / 2 + chunk.terrainCoordinates[i * 2 + 1];
+      const biome = biomeAt(x, z, this.seed);
+      blends.setY(i, biome === 'desert' ? 1 : THREE.MathUtils.clamp((0.7 - positions.getY(i)) / 0.7, 0, 1));
+      blends.setZ(i, biome === 'snow' || (this.season === 'Winter' && positions.getY(i) > 0.45) ? 1 : 0);
+      blends.setW(i, biome === 'rock' ? 1 : 0);
     }
     colors.needsUpdate = true;
+    blends.needsUpdate = true;
     for (const object of chunk.objects) {
       if (object instanceof THREE.InstancedMesh && object.userData.groundCover) {
         const material = object.material as THREE.MeshStandardMaterial;
         const flower = object.userData.groundCover === 'flower';
-        material.color.set(this.season === 'Winter' ? '#c1d5ca' : this.season === 'Autumn' ? '#b7a16b' : flower ? '#ecd9a4' : '#7aa85d');
+        material.color.set(object.userData.natureGround
+          ? this.season === 'Winter' ? '#c1d5ca' : this.season === 'Autumn' ? '#d2c3a2' : '#ffffff'
+          : this.season === 'Winter' ? '#c1d5ca' : this.season === 'Autumn' ? '#b7a16b' : flower ? '#ecd9a4' : '#7aa85d');
         object.visible = !(flower && this.season === 'Winter');
       }
       if (object.userData.resource !== 'wood') continue;
-      object.children.forEach(child => {
+      object.traverse(child => {
         if (!(child instanceof THREE.Mesh) || !(child.material instanceof THREE.MeshStandardMaterial) || typeof child.userData.foliageTier !== 'number') return;
-        const colors = this.season === 'Autumn' && object.userData.vegetationFamily !== 'conifer' ? ['#bb8a4e', '#a96b43', '#c39856']
-          : this.season === 'Winter' ? ['#a6c1b6', '#789b91', '#cad8cd']
-          : ['#4f8152', '#3f7350', '#668f55'];
-        child.material.color.set(colors[child.userData.foliageTier]);
+        const base = child.userData.foliageBase;
+        if (typeof base !== 'string') return;
+        child.material.color.set(base);
+        const species = object.userData.treeSpecies;
+        if (this.season === 'Autumn' && ['birch', 'oak', 'maple'].includes(species)) {
+          child.material.color.lerp(new THREE.Color('#b57a3e'), 0.7);
+        } else if (this.season === 'Winter') {
+          child.material.color.lerp(new THREE.Color('#b4c9bd'), 0.48);
+        }
       });
     }
   }
@@ -183,46 +307,177 @@ export class World {
     const z0 = cz * CHUNK_SIZE;
     const geometry = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE);
     geometry.rotateX(-Math.PI / 2);
-    geometry.translate(x0 + CHUNK_SIZE / 2, 0, z0 + CHUNK_SIZE / 2);
+    if (planetCoordinates(x0, z0 + CHUNK_SIZE / 2).reflected) {
+      const indices = geometry.getIndex()!;
+      for (let z = 0; z < CHUNK_SIZE; z++) {
+        for (let x = 0; x < CHUNK_SIZE; x++) {
+          const a = z * (CHUNK_SIZE + 1) + x;
+          const b = a + 1;
+          const c = a + CHUNK_SIZE + 1;
+          const d = c + 1;
+          const offset = (z * CHUNK_SIZE + x) * 6;
+          indices.setX(offset, a);
+          indices.setX(offset + 1, c);
+          indices.setX(offset + 2, d);
+          indices.setX(offset + 3, a);
+          indices.setX(offset + 4, d);
+          indices.setX(offset + 5, b);
+        }
+      }
+    }
     const pos = geometry.attributes.position;
+    const terrainCoordinates = new Float32Array(pos.count * 2);
     const colors: number[] = [];
+    const blends: number[] = [];
     const color = new THREE.Color();
     for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i);
-      const z = pos.getZ(i);
+      terrainCoordinates[i * 2] = pos.getX(i);
+      terrainCoordinates[i * 2 + 1] = pos.getZ(i);
+      const x = pos.getX(i) + x0 + CHUNK_SIZE / 2;
+      const z = pos.getZ(i) + z0 + CHUNK_SIZE / 2;
       pos.setY(i, this.vertexHeight(x, z));
       const biome = biomeAt(x, z, this.seed);
       const geographic = planetCoordinates(x, z);
       const latitude = geographic.z / PLANET_HEIGHT * 180;
-      const longitude = geographic.x / PLANET_WIDTH * 180;
-      const climate = climateZone(latitude, pos.getY(i) * 100, 800, 0.5 + seededNoise(x, z, this.seed) * 0.35, this.seed);
-      color.set(climate === 'polar-ice' ? '#d7e5df' : climate === 'tundra' ? '#9da98b'
-        : climate === 'hot-desert' || climate === 'cold-desert' ? '#d1b877'
-        : climate === 'alpine' ? '#718084'
-        : climate === 'tropical-rainforest' ? '#356c48'
-        : climate === 'boreal' ? '#58745b'
-        : biome === 'ocean' ? '#287b86' : biome === 'beach' ? '#d8c58a'
-        : biome === 'forest' ? '#4d7d51' : '#70a65a');
+      const climate = climateZone(latitude, pos.getY(i) * 100, 800,
+        0.5 + seededNoise(geographic.x, geographic.z, this.seed) * 0.35, this.seed);
+      color.set(terrainPalette(biome, climate));
+      const variation = Math.sin(geographic.x * 0.31 + this.seed) * Math.cos(geographic.z * 0.27 - this.seed);
+      color.multiplyScalar(0.94 + variation * 0.06);
       colors.push(color.r, color.g, color.b);
+      const forest = 0.45 + 0.3 * Math.sin(geographic.x * 0.09 + this.seed)
+        * Math.cos(geographic.z * 0.11 - this.seed);
+      const sand = biome === 'desert' ? 1 : THREE.MathUtils.clamp((0.7 - pos.getY(i)) / 0.7, 0, 1);
+      blends.push(forest, sand, biome === 'snow' ? 1 : 0, biome === 'rock' ? 1 : 0);
     }
     geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geometry.setAttribute('terrainBlend', new THREE.Float32BufferAttribute(blends, 4));
     geometry.computeVertexNormals();
-    const terrain = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92 }));
+    const center = planetCoordinates(x0 + CHUNK_SIZE / 2, z0 + CHUNK_SIZE / 2);
+    const terrainOrigin = new THREE.Vector2(center.x % 48, center.z % 48);
+    const terrainMaterial = this.terrainTextures
+      ? createTerrainMaterial(this.terrainTextures, terrainOrigin, center.reflected)
+      : new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92 });
+    if (!this.terrainTextures) terrainMaterial.onBeforeCompile = shader => {
+      shader.uniforms.terrainOrigin = { value: terrainOrigin };
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nuniform vec2 terrainOrigin;\nvarying vec2 terrainCoordinate;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nterrainCoordinate = position.xz + terrainOrigin;');
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying vec2 terrainCoordinate;')
+        .replace('#include <color_fragment>', `#include <color_fragment>
+          float detail = sin(terrainCoordinate.x * 2.094395) * sin(terrainCoordinate.y * 1.570796);
+          detail += sin((terrainCoordinate.x + terrainCoordinate.y) * 4.188790) * 0.35;
+          diffuseColor.rgb *= 0.96 + detail * 0.045;`);
+    };
+    const terrain = new THREE.Mesh(geometry, terrainMaterial);
+    terrain.position.set(x0 + CHUNK_SIZE / 2, 0, z0 + CHUNK_SIZE / 2);
     terrain.userData.chunk = `${cx},${cz}`;
     terrain.receiveShadow = true;
-    const water = new THREE.Mesh(new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE),
-      new THREE.MeshPhysicalMaterial({ color: '#56aeb8', transparent: true, opacity: 0.72, roughness: 0.18, metalness: 0.05 }));
+    const waterMaterial = new THREE.MeshPhysicalMaterial({
+      color: '#4e9daa', transparent: true, opacity: 0.76, roughness: 0.24, metalness: 0.05, depthWrite: false,
+    });
+    const waterOrigin = { value: new THREE.Vector2((x0 + CHUNK_SIZE / 2) % 48, (z0 + CHUNK_SIZE / 2) % 48) };
+    waterMaterial.onBeforeCompile = shader => {
+      shader.uniforms.waterTime = this.waterTime;
+      shader.uniforms.waterWind = this.waterWind;
+      shader.uniforms.waterOrigin = waterOrigin;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nuniform vec2 waterOrigin;\nattribute float waterDepth;\nvarying vec2 waterCoordinate;\nvarying float shoreDepth;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nwaterCoordinate = vec2(position.x, -position.y) + waterOrigin;\nshoreDepth = waterDepth;');
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nuniform float waterTime;\nuniform float waterWind;\nvarying vec2 waterCoordinate;\nvarying float shoreDepth;')
+        .replace('#include <color_fragment>', `#include <color_fragment>
+          float wave = sin(waterCoordinate.x * 0.392699 + waterCoordinate.y * 0.261799 + waterTime * 0.8);
+          wave += sin(waterCoordinate.x * 0.261799 - waterCoordinate.y * 0.392699 - waterTime * 0.55);
+          float glint = smoothstep(0.9, 1.7, wave) * (0.18 + 0.12 * waterWind);
+          diffuseColor.rgb *= 0.9 + wave * 0.09;
+          diffuseColor.rgb += vec3(0.25, 0.31, 0.28) * glint;
+          diffuseColor.a *= smoothstep(0.0, 0.35, shoreDepth);`);
+    };
+    const waterGeometry = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE);
+    waterGeometry.setIndex(geometry.getIndex()!.clone());
+    const waterDepth = new Float32Array(pos.count);
+    for (let i = 0; i < pos.count; i++) waterDepth[i] = -0.08 - pos.getY(i);
+    waterGeometry.setAttribute('waterDepth', new THREE.BufferAttribute(waterDepth, 1));
+    const water = new THREE.Mesh(waterGeometry, waterMaterial);
+    water.userData.waterOrigin = waterOrigin;
     water.rotation.x = -Math.PI / 2;
     water.position.set(x0 + CHUNK_SIZE / 2, -0.08, z0 + CHUNK_SIZE / 2);
     water.name = 'water';
     water.receiveShadow = true;
-    const chunk: Chunk = { x: cx, z: cz, objects: [terrain, water], terrain, baseColors: new Float32Array(colors) };
+    const chunk: Chunk = { x: cx, z: cz, objects: [terrain, water], terrain, water, terrainCoordinates,
+      coverCoordinates: new Map(), baseColors: new Float32Array(colors) };
     this.chunks.set(`${cx},${cz}`, chunk);
     this.addNature(chunk);
     this.addDeposits(chunk);
     this.addGroundCover(chunk);
+    if (this.tangentFrame) this.projectChunk(chunk);
     chunk.objects.forEach(object => this.group.add(object));
     this.colorChunk(chunk);
+  }
+
+  setTangentFrame(frame: PlanetTangentFrame | null) {
+    this.tangentFrame = frame;
+    for (const chunk of this.chunks.values()) this.projectChunk(chunk);
+  }
+
+  private projectChunk(chunk: Chunk) {
+    const x0 = chunk.x * CHUNK_SIZE;
+    const z0 = chunk.z * CHUNK_SIZE;
+    const project = (x: number, z: number) => this.tangentFrame?.toLocal({ x, z }) ?? { x, z };
+    const center = project(x0 + CHUNK_SIZE / 2, z0 + CHUNK_SIZE / 2);
+    chunk.terrain.position.set(center.x, 0, center.z);
+    const geometry = chunk.terrain.geometry;
+    const positions = geometry.getAttribute('position');
+    for (let i = 0; i < positions.count; i++) {
+      const point = project(x0 + CHUNK_SIZE / 2 + chunk.terrainCoordinates[i * 2],
+        z0 + CHUNK_SIZE / 2 + chunk.terrainCoordinates[i * 2 + 1]);
+      positions.setX(i, point.x - center.x);
+      positions.setZ(i, point.z - center.z);
+    }
+    positions.needsUpdate = true;
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+
+    chunk.water.position.x = center.x;
+    chunk.water.position.z = center.z;
+    const waterPositions = chunk.water.geometry.getAttribute('position');
+    for (let i = 0; i < waterPositions.count; i++) {
+      const x = x0 + CHUNK_SIZE / 2 + chunk.terrainCoordinates[i * 2];
+      const z = z0 + CHUNK_SIZE / 2 + chunk.terrainCoordinates[i * 2 + 1];
+      const point = project(x, z);
+      waterPositions.setX(i, point.x - center.x);
+      waterPositions.setY(i, center.z - point.z);
+    }
+    waterPositions.needsUpdate = true;
+    chunk.water.geometry.computeBoundingBox();
+    chunk.water.geometry.computeBoundingSphere();
+
+    const matrix = new THREE.Matrix4();
+    for (const object of chunk.objects) {
+      const coordinates = this.resourceCoordinates.get(object);
+      if (coordinates) {
+        const point = project(coordinates.x, coordinates.z);
+        object.position.x = point.x;
+        object.position.z = point.z;
+      } else if (object instanceof THREE.InstancedMesh && chunk.coverCoordinates.has(object)) {
+        const origin = project(x0, z0);
+        object.position.x = origin.x;
+        object.position.z = origin.z;
+        const cover = chunk.coverCoordinates.get(object)!;
+        for (let i = 0; i < cover.length / 2; i++) {
+          const point = project(x0 + cover[i * 2], z0 + cover[i * 2 + 1]);
+          object.getMatrixAt(i, matrix);
+          matrix.elements[12] = point.x - origin.x;
+          matrix.elements[14] = point.z - origin.z;
+          object.setMatrixAt(i, matrix);
+        }
+        object.instanceMatrix.needsUpdate = true;
+        computeFullCoverBounds(object);
+      }
+    }
   }
 
   private addDeposits(chunk: Chunk) {
@@ -241,11 +496,13 @@ export class World {
         deposit.position.set(x, this.heightAt(x, z), z);
         deposit.userData.depositId = id;
         deposit.userData.mineral = mineral;
+        this.resourceCoordinates.set(deposit, { x, z });
         const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.65, 0),
           new THREE.MeshStandardMaterial({ color: '#727b74', roughness: 1 }));
         rock.position.y = 0.38;
         rock.scale.set(1.15, 0.7, 0.85);
         rock.castShadow = true;
+        rock.userData.depositRock = true;
         deposit.add(rock);
         const vein = new THREE.Mesh(new THREE.IcosahedronGeometry(0.36, 0),
           new THREE.MeshStandardMaterial({ color: colors[mineral], roughness: 0.85 }));
@@ -253,6 +510,7 @@ export class World {
         vein.scale.set(1, 0.55, 0.7);
         deposit.add(vein);
         chunk.objects.push(deposit);
+        this.installGroundVisual(deposit, 'stone');
       }
     }
   }
@@ -267,7 +525,10 @@ export class World {
   setDepositExclusions(exclusions: Array<{ x: number; z: number; radius: number }>) {
     this.depositExclusions = exclusions.map(exclusion => ({ ...exclusion }));
     for (const object of [...this.group.children]) {
-      if (object.userData.depositId && this.depositBlocked(object.position.x, object.position.z)) this.removeResource(object);
+      if (object.userData.depositId) {
+        const position = this.resourceLocation(object);
+        if (this.depositBlocked(position.x, position.z)) this.removeResource(object);
+      }
     }
   }
 
@@ -281,30 +542,33 @@ export class World {
       const px = x + seededNoise(point.x, point.z, this.seed) - 0.5;
       const pz = z + (seededNoise(point.z, point.x, this.seed + 3) - 0.5) * (point.reflected ? -1 : 1);
       const h = legacy ? terrainHeight(px, pz, this.seed) : this.heightAt(px, pz);
+      const surface = legacy ? this.heightAt(px, pz) : h;
       const biome = biomeAt(px, pz, this.seed);
       const family = vegetationFamilyAt(px, pz, this.seed);
       let object: THREE.Object3D | undefined;
       if (h > 0.35 && (family === 'deciduous' || family === 'conifer')
         && seededNoise(point.x, point.z, this.seed + 8) > (family === 'conifer' ? 0.52 : 0.42)) {
         const treePoint = planetCoordinates(px, pz);
-        object = this.tree(px, h, pz, treePoint.x, treePoint.z, family);
+        object = this.tree(px, surface, pz, treePoint.x, treePoint.z, family);
       } else if (h > 0.45 && family === 'cactus' && seededNoise(point.x, point.z, this.seed + 8) > 0.91) {
-        object = this.cactus(px, h, pz, point.x, point.z);
+        object = this.cactus(px, surface, pz, point.x, point.z);
       } else if (h > 0.1 && biome !== 'ocean' && seededNoise(point.x + 4, point.z + 9, this.seed) > 0.76) {
         const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.25 + seededNoise(point.x, point.z, this.seed) * 0.45, 0),
           new THREE.MeshStandardMaterial({ color: '#7c8580', roughness: 1 }));
-        rock.position.set(px, h + 0.12, pz);
+        rock.position.set(px, surface + 0.12, pz);
         rock.castShadow = true;
         rock.userData.resource = 'stone';
         object = rock;
       } else if (h > 0.45 && seededNoise(point.x + 12, point.z - 7, this.seed) > 0.8) {
         const bush = new THREE.Group();
-        bush.position.set(px, h, pz);
+        bush.position.set(px, surface, pz);
         const foliage = new THREE.Mesh(new THREE.IcosahedronGeometry(0.55, 1), new THREE.MeshStandardMaterial({ color: '#487a4a', roughness: 1 }));
+        foliage.userData.bushFoliage = true;
         foliage.position.y = 0.4;
         foliage.scale.set(1, 0.7, 0.85);
         bush.add(foliage);
         const berries = new THREE.Mesh(new THREE.IcosahedronGeometry(0.12, 0), new THREE.MeshStandardMaterial({ color: '#cd6863' }));
+        berries.userData.bushBerries = true;
         berries.position.set(0.25, 0.63, 0.24);
         bush.add(berries);
         bush.userData.resource = 'food';
@@ -313,7 +577,11 @@ export class World {
       if (object) {
         object.userData.resourceId = id;
         object.userData.legacy = legacy;
+        this.resourceCoordinates.set(object, { x: px, z: pz });
         chunk.objects.push(object);
+        this.installGroundVisual(object, 'stone');
+        this.installGroundVisual(object, 'fern');
+        this.installGroundVisual(object, 'shrub');
       }
     };
     for (let z = z0; z < z0 + CHUNK_SIZE; z++) {
@@ -329,33 +597,77 @@ export class World {
   private addGroundCover(chunk: Chunk) {
     const grass: THREE.Matrix4[] = [];
     const flowers: THREE.Matrix4[] = [];
+    const ferns: THREE.Matrix4[] = [];
     const transform = new THREE.Object3D();
-    for (let z = chunk.z * CHUNK_SIZE; z < (chunk.z + 1) * CHUNK_SIZE; z += 2) {
-      for (let x = chunk.x * CHUNK_SIZE; x < (chunk.x + 1) * CHUNK_SIZE; x += 2) {
+    const x0 = chunk.x * CHUNK_SIZE;
+    const z0 = chunk.z * CHUNK_SIZE;
+    for (let z = chunk.z * CHUNK_SIZE; z < (chunk.z + 1) * CHUNK_SIZE; z++) {
+      for (let x = chunk.x * CHUNK_SIZE; x < (chunk.x + 1) * CHUNK_SIZE; x++) {
         const point = planetCoordinates(x, z);
         const n = seededNoise(point.x, point.z, this.seed + 82);
         const px = x + n - 0.5;
-        const pz = z + seededNoise(point.z, point.x, this.seed + 71) - 0.5;
+        const pz = z + (seededNoise(point.z, point.x, this.seed + 71) - 0.5) * (point.reflected ? -1 : 1);
         const y = this.heightAt(px, pz);
         const biome = biomeAt(px, pz, this.seed);
-        if (y < 0.5 || biome === 'rock' || biome === 'ocean' || biome === 'desert' || n < 0.45) continue;
-        transform.position.set(px, y + 0.13, pz);
+        if (y < 0.5 || biome === 'rock' || biome === 'ocean' || biome === 'desert'
+          || n < (biome === 'grass' ? 0.5 : 0.58)) continue;
+        transform.position.set(px - x0, y + 0.13, pz - z0);
         transform.rotation.set(0, n * Math.PI * 2, (n - 0.5) * 0.25);
         transform.scale.setScalar(0.7 + n * 0.7);
         transform.updateMatrix();
-        (n > 0.94 ? flowers : grass).push(transform.matrix.clone());
+        (n > 0.97 ? flowers : biome === 'forest' && n > 0.92 ? ferns : grass).push(transform.matrix.clone());
       }
     }
-    const addCover = (matrices: THREE.Matrix4[], geometry: THREE.BufferGeometry, color: string, kind: 'grass' | 'flower') => {
+    const addCover = (matrices: THREE.Matrix4[], geometry: THREE.BufferGeometry, color: string, kind: 'grass' | 'flower' | 'fern') => {
+      if (kind !== 'flower') {
+        const ranked = matrices.map(matrix => {
+          const point = planetCoordinates(matrix.elements[12] + x0, matrix.elements[14] + z0);
+          return { matrix, rank: seededNoise(point.x, point.z, this.seed + 197) };
+        });
+        ranked.sort((a, b) => a.rank - b.rank);
+        matrices.splice(0, matrices.length, ...ranked.map(item => item.matrix));
+      }
       const mesh = new THREE.InstancedMesh(geometry, new THREE.MeshStandardMaterial({ color, roughness: 1 }), matrices.length);
+      mesh.position.set(x0, 0, z0);
       mesh.userData.groundCover = kind;
+      const coordinates = new Float32Array(matrices.length * 2);
+      matrices.forEach((matrix, index) => {
+        coordinates[index * 2] = matrix.elements[12];
+        coordinates[index * 2 + 1] = matrix.elements[14];
+      });
+      chunk.coverCoordinates.set(mesh, coordinates);
       matrices.forEach((matrix, index) => mesh.setMatrixAt(index, matrix));
       mesh.instanceMatrix.needsUpdate = true;
       mesh.computeBoundingSphere();
       chunk.objects.push(mesh);
+      if (kind !== 'flower') this.installGroundVisual(mesh, kind);
     };
     addCover(grass, new THREE.ConeGeometry(0.11, 0.35, 3), '#7aa85d', 'grass');
     addCover(flowers, new THREE.IcosahedronGeometry(0.12, 0), '#ecd9a4', 'flower');
+    addCover(ferns, new THREE.ConeGeometry(0.11, 0.35, 3), '#7aa85d', 'fern');
+  }
+
+  private installGroundVisual(object: THREE.Object3D, kind: GroundAssetKind) {
+    if (!this.groundAssets) return;
+    if (kind === 'stone' && (object.userData.resource === 'stone' || object.userData.depositId)) {
+      const location = this.resourceLocation(object);
+      const point = planetCoordinates(location.x, location.z);
+      const variation = seededNoise(point.x, point.z, this.seed + 659);
+      if (object instanceof THREE.Mesh) this.groundAssets.installStone(object, variation);
+      else {
+        const rock = object.children.find((child): child is THREE.Mesh =>
+          child instanceof THREE.Mesh && child.userData.depositRock);
+        if (rock) this.groundAssets.installStone(rock, variation, true);
+      }
+    } else if (object instanceof THREE.InstancedMesh && object.userData.groundCover === kind
+      && (kind === 'grass' || kind === 'fern')) {
+      this.groundAssets.installCover(object, kind);
+    } else if (kind === 'shrub' && object.userData.resource === 'food') {
+      if (this.groundAssets.installBush(object)) {
+        const placeholder = object.children.find(child => child.userData.bushBerries);
+        if (placeholder) { object.remove(placeholder); disposeObject(placeholder); }
+      }
+    }
   }
 
   findNearest(x: number, z: number, range: number, resource?: Resource) {
@@ -363,7 +675,7 @@ export class World {
     let distance = range;
     for (const object of this.group.children) {
       if (!object.userData.resource || (resource && object.userData.resource !== resource)) continue;
-      const d = planetDistanceMeters(object.position, { x, z });
+      const d = planetDistanceMeters(this.resourceLocation(object), { x, z });
       if (d < distance) { distance = d; nearest = object; }
     }
     return nearest;
@@ -374,10 +686,21 @@ export class World {
     let distance = range;
     for (const object of this.group.children) {
       if (!object.userData.depositId) continue;
-      const d = planetDistanceMeters(object.position, { x, z });
+      const d = planetDistanceMeters(this.resourceLocation(object), { x, z });
       if (d < distance) { distance = d; nearest = object; }
     }
     return nearest;
+  }
+
+  resourceLocation(object: THREE.Object3D): Readonly<{ x: number; z: number }> {
+    const position = this.resourceCoordinates.get(object);
+    if (!position) throw new Error('Missing resource ownership coordinates');
+    return position;
+  }
+
+  resourcePosition(object: THREE.Object3D) {
+    const position = this.resourceLocation(object);
+    return new THREE.Vector3(position.x, object.position.y, position.z);
   }
 
   mineDeposit(deposit: THREE.Object3D, hasPickaxe: boolean) {
@@ -388,7 +711,7 @@ export class World {
     const id = deposit.userData.depositId as string;
     const progress = (this.mining.get(id) ?? 0) + 1;
     this.mining.set(id, progress);
-    const position = deposit.position.clone();
+    const position = this.resourcePosition(deposit);
     if (progress === 3) this.removeResource(deposit);
     return { mineral, needsPickaxe: false as const, progress, position };
   }
@@ -406,7 +729,7 @@ export class World {
     const nearest = this.findNearest(x, z, range, resource);
     if (!nearest) return undefined;
     const kind = nearest.userData.resource as Resource;
-    const position = nearest.position.clone();
+    const position = this.resourcePosition(nearest);
     this.depleted.add(nearest.userData.resourceId as string);
     this.removeResource(nearest);
     return { resource: kind, position };
@@ -414,7 +737,7 @@ export class World {
 
   private removeResource(object: THREE.Object3D) {
     this.group.remove(object);
-    this.fadedTrees.delete(object);
+    this.forgetFadedMeshes(object);
     for (const chunk of this.chunks.values()) {
       const index = chunk.objects.indexOf(object);
       if (index >= 0) { chunk.objects.splice(index, 1); break; }
@@ -435,25 +758,60 @@ export class World {
     this.group.children.forEach(disposeObject);
     this.group.clear();
     this.chunks.clear();
-    this.fadedTrees.clear();
+    this.fadedTreeMeshes.clear();
+    this.terrainTextures?.dispose();
+    this.groundAssets?.dispose();
+    this.natureAssets?.dispose();
   }
 
   intersectTerrain(ray: THREE.Raycaster) {
     return ray.intersectObjects([...this.chunks.values()].map(chunk => chunk.terrain))[0]?.point;
   }
 
-  updateTreeOcclusion(camera: THREE.Vector3, player: THREE.Vector3) {
-    const obstructing = obstructingTrees(this.group, camera, player);
-    const updateMaterial = (tree: THREE.Object3D, fade: boolean) => tree.traverse(object => {
-      if (!(object instanceof THREE.Mesh) || !(object.material instanceof THREE.MeshStandardMaterial)) return;
-      object.material.transparent = fade;
-      object.material.opacity = fade ? 0.18 : 1;
-      object.material.depthWrite = !fade;
-      object.material.needsUpdate = true;
+  private forgetFadedMeshes(root: THREE.Object3D) {
+    root.traverse(object => {
+      if (object instanceof THREE.Mesh) this.fadedTreeMeshes.delete(object);
     });
-    for (const tree of this.fadedTrees) if (!obstructing.has(tree)) updateMaterial(tree, false);
-    for (const tree of obstructing) if (!this.fadedTrees.has(tree)) updateMaterial(tree, true);
-    this.fadedTrees = obstructing;
+  }
+
+  updateTreeOcclusion(camera: THREE.Vector3, player: THREE.Vector3, dt: number) {
+    const obstructing = obstructingTreeMeshes(this.group, camera, player);
+    const worldCamera = this.group.localToWorld(camera.clone());
+    const worldTarget = this.group.localToWorld(player.clone().add(new THREE.Vector3(0, 1.05, 0)));
+    for (const mesh of obstructing) {
+      if (!this.fadedTreeMeshes.has(mesh)) this.fadedTreeMeshes.set(mesh, 1);
+    }
+    for (const [mesh, opacity] of this.fadedTreeMeshes) {
+      const target = obstructing.has(mesh) ? 0.18 : 1;
+      const next = THREE.MathUtils.damp(opacity, target, 12, dt);
+      const restored = target === 1 && next > 0.995;
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const material of materials) {
+        if (!(material instanceof THREE.MeshStandardMaterial)) continue;
+        const clearance: unknown = material.userData.foliageClearance;
+        if (clearance instanceof FoliageClearance) {
+          clearance.camera.value.copy(worldCamera);
+          clearance.target.value.copy(worldTarget);
+          clearance.amount.value = restored ? 0 : (1 - next) / 0.82;
+          continue;
+        }
+        if (typeof material.userData.natureOpacity !== 'number') {
+          material.userData.natureOpacity = material.opacity;
+          material.userData.natureTransparent = material.transparent;
+          material.userData.natureDepthWrite = material.depthWrite;
+        }
+        const transparent = !restored || material.userData.natureTransparent === true;
+        const depthWrite = restored ? material.userData.natureDepthWrite !== false : false;
+        if (material.transparent !== transparent || material.depthWrite !== depthWrite) {
+          material.transparent = transparent;
+          material.depthWrite = depthWrite;
+          material.needsUpdate = true;
+        }
+        material.opacity = material.userData.natureOpacity * (restored ? 1 : next);
+      }
+      if (restored) this.fadedTreeMeshes.delete(mesh);
+      else this.fadedTreeMeshes.set(mesh, next);
+    }
   }
 
   private tree(x: number, y: number, z: number, seedX: number, seedZ: number, family: 'deciduous' | 'conifer') {
@@ -461,25 +819,91 @@ export class World {
     root.position.set(x, y, z);
     root.scale.setScalar(0.75 + seededNoise(seedX, seedZ, this.seed) * 0.65);
     root.userData.vegetationFamily = family;
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.28, 1.5, 7),
-      new THREE.MeshStandardMaterial({ color: '#806044', roughness: 1 }));
-    trunk.position.y = 0.75;
+    const species = treeSpeciesAt(seedX, seedZ, this.seed, family);
+    root.userData.treeSpecies = species;
+    root.userData.natureMature = (species === 'oak' && seededNoise(seedX, seedZ, this.seed + 791) < 0.12)
+      || (species === 'pine' && seededNoise(seedX, seedZ, this.seed + 792) < 0.16);
+    root.rotation.y = seededNoise(seedX, seedZ, this.seed + 481) * Math.PI * 2;
+    const height = species === 'palm' ? 2.8 : species === 'birch' ? 2.5
+      : species === 'pine' ? 2.35 : species === 'acacia' ? 2.1 : 1.8;
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(species === 'birch' ? 0.11 : 0.16, 0.26, height, 7),
+      new THREE.MeshStandardMaterial({ color: species === 'birch' ? '#d2c9b0' : '#806044', roughness: 1 }));
+    trunk.position.y = height / 2;
     trunk.castShadow = true;
     root.add(trunk);
-    const crownColors = family === 'conifer' ? ['#315a4b', '#39634e', '#416d53'] : ['#4f8152', '#3f7350', '#668f55'];
-    for (let i = 0; i < 3; i++) {
-      const crown = new THREE.Mesh(family === 'deciduous'
-        ? new THREE.IcosahedronGeometry(0.8 - i * 0.12, 1)
-        : new THREE.ConeGeometry(0.78 - i * 0.12, 1.55, 7),
-        new THREE.MeshStandardMaterial({ color: crownColors[i], roughness: 0.9 }));
-      crown.position.y = family === 'conifer' ? 1.25 + i * 0.58 : 1.55 + i * 0.55;
-      if (family === 'deciduous') crown.position.x = (i - 1) * 0.38;
-      crown.userData.foliageTier = i;
-      crown.castShadow = true;
-      root.add(crown);
+    const foliage = (geometry: THREE.BufferGeometry, color: string, tier: number) => {
+      const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color, roughness: 0.9 }));
+      mesh.userData.foliageTier = tier;
+      mesh.userData.foliageBase = color;
+      mesh.castShadow = true;
+      root.add(mesh);
+      return mesh;
+    };
+    if (species === 'pine' || species === 'spruce') {
+      const pine = species === 'pine';
+      for (let i = 0; i < 3; i++) {
+        const crown = foliage(new THREE.ConeGeometry((pine ? 0.65 : 0.95) - i * 0.13, pine ? 1.4 : 1.25, 7),
+          ['#315a4b', '#396b54', '#46785b'][i], i);
+        crown.position.y = (pine ? 1.5 : 1.0) + i * (pine ? 0.65 : 0.48);
+      }
+    } else if (species === 'palm') {
+      for (let i = 0; i < 5; i++) {
+        const leaf = foliage(new THREE.ConeGeometry(0.2, 1.45, 4), i % 2 ? '#447c4a' : '#609058', i % 3);
+        const angle = i * Math.PI * 2 / 5;
+        leaf.position.set(Math.cos(angle) * 0.52, height + 0.12, Math.sin(angle) * 0.52);
+        leaf.rotation.set(Math.sin(angle) * 1.12, 0, -Math.cos(angle) * 1.12);
+      }
+    } else if (species === 'acacia') {
+      for (let i = 0; i < 3; i++) {
+        const crown = foliage(new THREE.IcosahedronGeometry(0.78, 1), ['#627e4d', '#76915b', '#54754b'][i], i);
+        crown.position.set((i - 1) * 0.6, height + (i === 1 ? 0.28 : 0), i === 1 ? -0.22 : 0.1);
+        crown.scale.set(1.05, 0.32, 0.8);
+      }
+    } else {
+      const colors = species === 'birch' ? ['#7b9d65', '#8bab70', '#6d955f']
+        : species === 'maple' ? ['#497c49', '#649052', '#52854c']
+          : species === 'tropical' ? ['#286c46', '#378052', '#4b8b55'] : ['#47774b', '#588655', '#3d7049'];
+      for (let i = 0; i < 3; i++) {
+        const crown = foliage(new THREE.IcosahedronGeometry(species === 'oak' ? 0.85 : 0.7, species === 'maple' ? 0 : 1), colors[i], i);
+        crown.position.set((i - 1) * (species === 'birch' ? 0.25 : 0.55),
+          height + (i === 1 ? 0.5 : 0), i === 1 ? -0.15 : 0.12);
+        if (species === 'birch') crown.scale.set(0.75, 1.35, 0.75);
+        if (species === 'tropical') crown.scale.set(1.2, 0.65, 1);
+      }
     }
     root.userData.resource = 'wood';
+    this.installTreeVisual(root);
     return root;
+  }
+
+  private installTreeVisual(root: THREE.Object3D) {
+    const family: unknown = root.userData.vegetationFamily;
+    if (family !== 'deciduous' && family !== 'conifer') return;
+    if (family === 'deciduous' && !['birch', 'oak', 'maple'].includes(root.userData.treeSpecies)) return;
+    const desired: NatureTreeVariant = root.userData.natureMature
+      ? root.userData.treeSpecies === 'pine' ? 'mature-pine' : 'mature'
+      : root.userData.treeSpecies === 'pine' ? 'pine' : 'default';
+    if (root.userData.natureVariant === desired) return;
+    let variant = desired;
+    let visual = this.natureAssets?.create(family, root.rotation.y, desired);
+    if (!visual && (desired === 'mature' || desired === 'mature-pine') && !root.userData.natureAuthored) {
+      variant = desired === 'mature-pine' ? 'pine' : 'default';
+      visual = this.natureAssets?.create(family, root.rotation.y, variant);
+    }
+    if (!visual) return;
+    this.forgetFadedMeshes(root);
+    for (const child of [...root.children]) {
+      root.remove(child);
+      disposeObject(child);
+    }
+    root.rotation.z = 0;
+    root.add(visual);
+    root.updateWorldMatrix(true, true);
+    const bounds = new THREE.Box3().setFromObject(root);
+    const size = bounds.getSize(new THREE.Vector3());
+    root.userData.treeOcclusionRadius = Math.max(2.5, Math.hypot(size.x, size.z) * 0.5);
+    root.userData.natureAuthored = true;
+    root.userData.natureVariant = variant;
   }
 
   private cactus(x: number, y: number, z: number, seedX: number, seedZ: number) {
@@ -505,10 +929,17 @@ export class World {
     return plant;
   }
 
-  animate(time: number, wind: number) {
+  animate(time: number, wind: number, dt: number) {
+    this.waterTime.value = (this.waterTime.value + dt) % (Math.PI * 40);
+    this.waterWind.value = Math.max(0, Math.min(1.6, wind));
+    if (this.natureAssets) {
+      this.natureAssets.wind.time.value = time * 0.001;
+      this.natureAssets.wind.wind.value = this.waterWind.value;
+    }
     for (const object of this.group.children) {
-      if (object.name === 'water') object.position.y = -0.08 + Math.sin(time * 0.0007) * 0.035;
-      if (object.userData.resource === 'wood') object.rotation.z = Math.sin(time * 0.0012 + object.position.x * 0.2 + object.position.z * 0.1) * Math.min(0.025, wind * 0.015);
+      if (object.userData.resource === 'wood' && !object.userData.natureAuthored) {
+        object.rotation.z = Math.sin(time * 0.0012 + object.position.x * 0.2 + object.position.z * 0.1) * Math.min(0.025, wind * 0.015);
+      }
     }
   }
 
@@ -525,7 +956,15 @@ export class World {
     const b = this.vertexHeight(x0 + 1, z0);
     const c = this.vertexHeight(x0, z0 + 1);
     const d = this.vertexHeight(x0 + 1, z0 + 1);
-    return (a * (1 - dx) + b * dx) * (1 - dz) + (c * (1 - dx) + d * dx) * dz;
+    if (planetCoordinates(x0, z0 + 0.5).reflected) {
+      return dx <= dz
+        ? a + (c - a) * dz + (d - c) * dx
+        : a + (b - a) * dx + (d - b) * dz;
+    }
+    // Match PlaneGeometry's (x + 1, z) to (x, z + 1) diagonal.
+    return dx + dz <= 1
+      ? a + (b - a) * dx + (c - a) * dz
+      : d + (c - d) * (1 - dx) + (b - d) * (1 - dz);
   }
 
   dig(x: number, z: number) {
@@ -578,13 +1017,41 @@ export class World {
   }
 
   private refreshTerrain() {
+    const matrix = new THREE.Matrix4();
     for (const chunk of this.chunks.values()) {
       const geometry = chunk.terrain.geometry;
       const pos = geometry.attributes.position;
-      for (let i = 0; i < pos.count; i++) pos.setY(i, this.vertexHeight(pos.getX(i), pos.getZ(i)));
+      const waterDepth = chunk.water.geometry.getAttribute('waterDepth');
+      for (let i = 0; i < pos.count; i++) {
+        const x = chunk.x * CHUNK_SIZE + CHUNK_SIZE / 2 + chunk.terrainCoordinates[i * 2];
+        const z = chunk.z * CHUNK_SIZE + CHUNK_SIZE / 2 + chunk.terrainCoordinates[i * 2 + 1];
+        pos.setY(i, this.vertexHeight(x, z));
+        waterDepth.setX(i, -0.08 - pos.getY(i));
+      }
       pos.needsUpdate = true;
+      waterDepth.needsUpdate = true;
       geometry.computeVertexNormals();
       geometry.computeBoundingSphere();
+      this.colorChunk(chunk);
+      for (const object of chunk.objects) {
+        if (object.userData.resource || object.userData.depositId) {
+          const position = this.resourceLocation(object);
+          object.position.y = this.heightAt(position.x, position.z)
+            + (object.userData.resource === 'stone' ? 0.12 : 0);
+        } else if (object instanceof THREE.InstancedMesh && object.userData.groundCover) {
+          const coordinates = chunk.coverCoordinates.get(object);
+          if (!coordinates) throw new Error('Missing ground-cover ownership coordinates');
+          for (let i = 0; i < coordinates.length / 2; i++) {
+            object.getMatrixAt(i, matrix);
+            const x = chunk.x * CHUNK_SIZE + coordinates[i * 2];
+            const z = chunk.z * CHUNK_SIZE + coordinates[i * 2 + 1];
+            matrix.elements[13] = this.heightAt(x, z) + 0.13;
+            object.setMatrixAt(i, matrix);
+          }
+          object.instanceMatrix.needsUpdate = true;
+          computeFullCoverBounds(object);
+        }
+      }
     }
   }
 

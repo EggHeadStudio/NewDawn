@@ -13,7 +13,16 @@ function offlineShell(): Plugin {
       const characters = readdirSync(resolve('public/assets/characters/quaternius'))
         .filter(name => /\.(gltf|glb|bin|png)$/.test(name))
         .map(name => `./assets/characters/quaternius/${name}`);
-      const core = ['./', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', ...assets.map(name => `./${name}`), ...characters];
+      const terrain = readdirSync(resolve('public/assets/environment/terrain'))
+        .filter(name => /^terrain_(color|surface)_atlas\.jpg$/.test(name))
+        .map(name => `./assets/environment/terrain/${name}`);
+      const trees = readdirSync(resolve('public/assets/environment/trees'))
+        .filter(name => name.endsWith('.glb'))
+        .map(name => `./assets/environment/trees/${name}`);
+      const ground = readdirSync(resolve('public/assets/environment/ground'))
+        .filter(name => name.endsWith('.glb'))
+        .map(name => `./assets/environment/ground/${name}`);
+      const core = ['./', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', ...assets.map(name => `./${name}`), ...characters, ...terrain, ...trees, ...ground];
       const source = `
 const CACHE = ${JSON.stringify(`new-dawn-shell-${version}`)};
 const CORE = ${JSON.stringify(core)};

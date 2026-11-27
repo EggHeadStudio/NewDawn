@@ -86,7 +86,7 @@ function rotateAroundAxis(vector: Vector3, axis: Vector3, angle: number): Vector
 
 function geographicFromEcef(position: Vector3): GeographicPosition {
   const radius = Math.hypot(position.x, position.y, position.z);
-  const latitude = Math.asin(position.z / radius) * 180 / Math.PI;
+  const latitude = Math.atan2(position.z, Math.hypot(position.x, position.y)) * 180 / Math.PI;
   const longitude = Math.atan2(position.y, position.x) * 180 / Math.PI;
   return {
     planetId: 'new-dawn-earth',
@@ -106,11 +106,8 @@ export function transportBearing(
   const destinationUp = unitPosition(destination.latitude, destination.longitude);
   const axis = cross(startUp, destinationUp);
   const axisLength = Math.hypot(axis.x, axis.y, axis.z);
-  if (axisLength < 1e-12) return ((bearingDegrees % 360) + 360) % 360;
-  axis.x /= axisLength;
-  axis.y /= axisLength;
-  axis.z /= axisLength;
-  const angle = Math.atan2(axisLength, dot(startUp, destinationUp));
+  const alignment = dot(startUp, destinationUp);
+  if (axisLength < 1e-12 && alignment < 0) return ((bearingDegrees % 360) + 360) % 360;
   const startBasis = tangentBasis(start.latitude, start.longitude);
   const bearing = bearingDegrees * Math.PI / 180;
   const heading = {
@@ -118,7 +115,13 @@ export function transportBearing(
     y: startBasis.north.y * Math.cos(bearing) + startBasis.east.y * Math.sin(bearing),
     z: startBasis.north.z * Math.cos(bearing) + startBasis.east.z * Math.sin(bearing),
   };
-  const transported = rotateAroundAxis(heading, axis, angle);
+  let transported = heading;
+  if (axisLength >= 1e-12) {
+    axis.x /= axisLength;
+    axis.y /= axisLength;
+    axis.z /= axisLength;
+    transported = rotateAroundAxis(heading, axis, Math.atan2(axisLength, alignment));
+  }
   const destinationBasis = tangentBasis(destination.latitude, destination.longitude);
   const east = dot(transported, destinationBasis.east);
   const north = dot(transported, destinationBasis.north);
@@ -149,15 +152,16 @@ export function moveGeographic(start: Pick<GeographicPosition, 'latitude' | 'lon
   bearingDegrees: number, distanceMeters: number): GeographicPosition {
   const angular = distanceMeters / EARTH_RADIUS_METERS;
   const bearing = bearingDegrees * Math.PI / 180;
-  const lat1 = start.latitude * Math.PI / 180;
-  const lon1 = start.longitude * Math.PI / 180;
-  const lat2 = Math.asin(Math.sin(lat1) * Math.cos(angular) + Math.cos(lat1) * Math.sin(angular) * Math.cos(bearing));
-  const lon2 = lon1 + Math.atan2(
-    Math.sin(bearing) * Math.sin(angular) * Math.cos(lat1),
-    Math.cos(angular) - Math.sin(lat1) * Math.sin(lat2),
-  );
-  const latitude = normalizeLatitude(lat2 * 180 / Math.PI);
-  const longitude = normalizeLongitude(lon2 * 180 / Math.PI);
+  const origin = unitPosition(start.latitude, start.longitude);
+  const basis = tangentBasis(start.latitude, start.longitude);
+  const north = Math.cos(bearing) * Math.sin(angular);
+  const east = Math.sin(bearing) * Math.sin(angular);
+  const radial = Math.cos(angular);
+  const x = origin.x * radial + basis.north.x * north + basis.east.x * east;
+  const y = origin.y * radial + basis.north.y * north + basis.east.y * east;
+  const z = origin.z * radial + basis.north.z * north + basis.east.z * east;
+  const latitude = Math.atan2(z, Math.hypot(x, y)) * 180 / Math.PI;
+  const longitude = normalizeLongitude(Math.atan2(y, x) * 180 / Math.PI);
   return {
     latitude,
     longitude,
@@ -170,7 +174,7 @@ export function moveGeographic(start: Pick<GeographicPosition, 'latitude' | 'lon
 export function regionIdForCoordinates(latitude: number, longitude: number, level = 2) {
   const latBands = level === 2 ? 4 : level;
   const lonBands = level === 2 ? 8 : level * 2;
-  const latIndex = Math.floor((normalizeLatitude(latitude) + 90) / 180 * latBands);
+  const latIndex = Math.min(latBands - 1, Math.floor((normalizeLatitude(latitude) + 90) / 180 * latBands));
   const lonIndex = Math.floor((normalizeLongitude(longitude) + 180) / 360 * lonBands);
   return `region-${level}-${latIndex}-${lonIndex}`;
 }
@@ -180,7 +184,7 @@ export function hierarchicalTileId(latitude: number, longitude: number, zoom = 4
   const lat = normalizeLatitude(latitude);
   const lon = normalizeLongitude(longitude);
   const x = Math.floor((lon + 180) / 360 * 2 ** clampedZoom);
-  const y = Math.floor((lat + 90) / 180 * 2 ** clampedZoom);
+  const y = Math.min(2 ** clampedZoom - 1, Math.floor((lat + 90) / 180 * 2 ** clampedZoom));
   return `${clampedZoom}/${x}/${y}`;
 }
 
@@ -198,24 +202,25 @@ export function geographicToLocal(origin: { latitude: number; longitude: number 
 }
 
 export function localToGeographic(origin: { latitude: number; longitude: number }, xMeters: number, zMeters: number) {
+  // Orthographic tangent coordinates select the hemisphere facing the origin.
+  const distance = Math.hypot(xMeters, zMeters);
+  if (!Number.isFinite(distance) || distance > EARTH_RADIUS_METERS) {
+    throw new RangeError('Tangent offset must lie within the local hemisphere');
+  }
   const originPosition = ecefPosition({ ...origin, altitude: 0 });
   const basis = tangentBasis(origin.latitude, origin.longitude);
+  const radialScale = Math.sqrt(1 - (distance / EARTH_RADIUS_METERS) ** 2);
   const offset = {
     x: basis.east.x * xMeters - basis.north.x * zMeters,
     y: basis.east.y * xMeters - basis.north.y * zMeters,
     z: basis.east.z * xMeters - basis.north.z * zMeters,
   };
   const position = {
-    x: originPosition.x + offset.x,
-    y: originPosition.y + offset.y,
-    z: originPosition.z + offset.z,
+    x: originPosition.x * radialScale + offset.x,
+    y: originPosition.y * radialScale + offset.y,
+    z: originPosition.z * radialScale + offset.z,
   };
-  const radius = Math.hypot(position.x, position.y, position.z);
-  return geographicFromEcef({
-    x: position.x * EARTH_RADIUS_METERS / radius,
-    y: position.y * EARTH_RADIUS_METERS / radius,
-    z: position.z * EARTH_RADIUS_METERS / radius,
-  });
+  return geographicFromEcef(position);
 }
 
 export function climateZone(latitude: number, altitudeMeters: number, distanceToOceanKm: number, moisture: number,

@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { connectionLayout, roadCosts, type RoadSegment } from './roads';
+import { connectionLayout, roadCosts, roadSlots, type RoadSegment } from './roads';
 import { isSurfacePaint, paintColors } from './paint';
 
 describe('roads and paint', () => {
   it('connects straight, corner and junction road layouts', () => {
     const road = (x: number, z: number): RoadSegment => ({ id: `${x}-${z}`, kind: 'dirt', x, z, height: 0, rotation: 0, width: 2 });
-    expect(connectionLayout(0, 0, [road(-2, 0), road(2, 0)]).shape).toBe('straight');
-    expect(connectionLayout(0, 0, [road(0, -2), road(2, 0)]).shape).toBe('corner');
-    expect(connectionLayout(0, 0, [road(-2, 0), road(2, 0), road(0, -2)]).shape).toBe('junction');
+    expect(connectionLayout(0, 0, roadSlots([road(-2, 0), road(2, 0)])).shape).toBe('straight');
+    expect(connectionLayout(0, 0, roadSlots([road(0, -2), road(2, 0)])).shape).toBe('corner');
+    expect(connectionLayout(0, 0, roadSlots([road(-2, 0), road(2, 0), road(0, -2)])).shape).toBe('junction');
   });
 
   it('has distinct road costs and bounded validated paint strokes', () => {

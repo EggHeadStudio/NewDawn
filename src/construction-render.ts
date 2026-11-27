@@ -3,6 +3,8 @@ import { FLOOR_HEIGHT, type PieceKind, type StructuralPiece } from './constructi
 import { ShelterIndex } from './shelter';
 import { occludingPieces, type OcclusionBatch } from './construction-occlusion';
 import type { SurfacePaint } from './paint';
+import { CHUNK_SIZE, planetPositionToGeographic, PlanetTangentFrame } from './planet';
+import { geographicDistanceMeters, transportBearing } from './geography';
 
 type Part = { offset: [number, number, number]; size: [number, number, number]; color: string; opacity?: number };
 const parts: Record<PieceKind, Part[]> = {
@@ -87,9 +89,28 @@ export class ConstructionRenderer {
   private readonly occlusionCamera = new THREE.Vector3();
   private readonly position = new THREE.Vector3();
   private readonly scale = new THREE.Vector3();
+  private tangentFrame: PlanetTangentFrame | null = null;
+  private pieces: readonly StructuralPiece[] = [];
+  private paints: readonly SurfacePaint[] = [];
 
   constructor() {
     this.addOpacityShader(this.roofMaterial);
+  }
+
+  setTangentFrame(frame: PlanetTangentFrame | null) {
+    this.tangentFrame = frame;
+    this.refresh(this.pieces, this.paints);
+  }
+
+  private positionInFrame(x: number, z: number) {
+    return this.tangentFrame?.toLocal({ x, z }) ?? { x, z };
+  }
+
+  private rotationInFrame(piece: StructuralPiece) {
+    const rotation = piece.rotation * Math.PI / 2;
+    if (!this.tangentFrame) return rotation;
+    const geographic = planetPositionToGeographic(piece.x, piece.z);
+    return THREE.MathUtils.degToRad(transportBearing(geographic, this.tangentFrame.origin, piece.rotation * 90 + 90) - 90);
   }
 
   private addOpacityShader(material: THREE.MeshStandardMaterial) {
@@ -104,7 +125,12 @@ export class ConstructionRenderer {
   }
 
   refresh(pieces: readonly StructuralPiece[], paints: readonly SurfacePaint[] = []) {
+    this.pieces = pieces;
+    this.paints = paints;
     this.shelter.refresh(pieces);
+    const visiblePieces = this.tangentFrame
+      ? pieces.filter(piece => geographicDistanceMeters(this.tangentFrame!.origin, planetPositionToGeographic(piece.x, piece.z)) < 1000)
+      : pieces;
     for (const mesh of this.meshes) { this.group.remove(mesh); mesh.dispose(); }
     this.roofGeometries.forEach(geometry => geometry.dispose());
     this.edgeGeometries.forEach(geometry => geometry.dispose());
@@ -122,17 +148,20 @@ export class ConstructionRenderer {
     const activeEdges = new Set(pieces.filter(piece => ['wall', 'doorframe', 'door', 'windowframe', 'window'].includes(piece.kind)).map(piece => piece.id));
     for (const id of this.edgeOpacity.keys()) if (!activeEdges.has(id)) this.edgeOpacity.delete(id);
     for (const kind of Object.keys(parts) as PieceKind[]) {
-      const selected = pieces.filter(piece => piece.kind === kind && (kind !== 'roof' || !piece.roofShape));
+      const selected = visiblePieces.filter(piece => piece.kind === kind && (kind !== 'roof' || !piece.roofShape));
       if (!selected.length) continue;
       for (const part of parts[kind]) {
         const edge = kind === 'wall' || kind === 'doorframe' || kind === 'door' || kind === 'windowframe' || kind === 'window';
-        const paintedGroups = new Map<string, { color: string; pieces: StructuralPiece[] }>();
+        const paintedGroups = new Map<string, { color: string; x: number; z: number; pieces: StructuralPiece[] }>();
         for (const piece of selected) {
           const paint = paints.find(item => item.pieceId === piece.id);
           const color = paint?.color ?? part.color;
-          const group = paintedGroups.get(color) ?? { color, pieces: [] };
+          const x = Math.floor(piece.x / CHUNK_SIZE) * CHUNK_SIZE;
+          const z = Math.floor(piece.z / CHUNK_SIZE) * CHUNK_SIZE;
+          const key = `${color}:${x}:${z}`;
+          const group = paintedGroups.get(key) ?? { color, x, z, pieces: [] };
           group.pieces.push(piece);
-          paintedGroups.set(color, group);
+          paintedGroups.set(key, group);
         }
         for (const group of paintedGroups.values()) {
         const materialKey = `${group.color}:${part.opacity ?? 1}:${edge}`;
@@ -156,10 +185,11 @@ export class ConstructionRenderer {
           this.edgeGeometries.push(geometry);
         }
         const mesh = new THREE.InstancedMesh(geometry, material, group.pieces.length);
+        const origin = this.positionInFrame(group.x, group.z);
+        mesh.position.set(origin.x, 0, origin.z);
         mesh.userData.constructionKind = kind;
         mesh.castShadow = kind !== 'roof';
         mesh.receiveShadow = true;
-        mesh.frustumCulled = false;
         group.pieces.forEach((piece, index) => {
           if (kind === 'door') {
             if (!this.angles.has(piece.id)) this.angles.set(piece.id, piece.open ? Math.PI / 2 : 0);
@@ -174,7 +204,7 @@ export class ConstructionRenderer {
         }
       }
     }
-    const pitched = pieces.filter(piece => piece.kind === 'roof' && piece.roofShape);
+    const pitched = visiblePieces.filter(piece => piece.kind === 'roof' && piece.roofShape);
     const roofSlots = new Map(pieces.filter(piece => piece.kind === 'roof').map(piece => [`${piece.x},${piece.z},${piece.y.toFixed(2)}`, piece]));
     const heightAt = (piece: StructuralPiece, x: number, z: number) => {
       if (!piece.roofShape) return 0;
@@ -183,7 +213,7 @@ export class ConstructionRenderer {
       return offset < 0 ? heights[0] + (heights[1] - heights[0]) * (offset + 1)
         : heights[1] + (heights[2] - heights[1]) * offset;
     };
-    const batches = new Map<string, { piece: StructuralPiece; sides: boolean[]; pieces: StructuralPiece[] }>();
+    const batches = new Map<string, { piece: StructuralPiece; sides: boolean[]; x: number; z: number; pieces: StructuralPiece[] }>();
     for (const piece of pitched) {
       const alongX = piece.roofShape!.axis === 1;
       const neighbors = alongX ? [[-2, 0], [2, 0], [0, -2], [0, 2]] : [[0, -2], [0, 2], [-2, 0], [2, 0]];
@@ -196,8 +226,10 @@ export class ConstructionRenderer {
           return Math.abs(heightAt(piece, x, z) - heightAt(neighbor, x, z)) > 0.0001;
         });
       });
-      const key = `${JSON.stringify(piece.roofShape)}:${sides.join(',')}`;
-      const batch = batches.get(key) ?? { piece, sides, pieces: [] };
+      const x = Math.floor(piece.x / CHUNK_SIZE) * CHUNK_SIZE;
+      const z = Math.floor(piece.z / CHUNK_SIZE) * CHUNK_SIZE;
+      const key = `${JSON.stringify(piece.roofShape)}:${sides.join(',')}:${x}:${z}`;
+      const batch = batches.get(key) ?? { piece, sides, x, z, pieces: [] };
       batch.pieces.push(piece);
       batches.set(key, batch);
     }
@@ -205,14 +237,18 @@ export class ConstructionRenderer {
       const geometry = pitchedGeometry(batch.piece, batch.sides);
       geometry.setAttribute('instanceOpacity', new THREE.InstancedBufferAttribute(new Float32Array(batch.pieces.map(piece => this.roofOpacity.get(piece.id) ?? 1)), 1));
       const mesh = new THREE.InstancedMesh(geometry, this.roofMaterial, batch.pieces.length);
+      const origin = this.positionInFrame(batch.x, batch.z);
+      mesh.position.set(origin.x, 0, origin.z);
       mesh.userData.constructionKind = 'roof';
       batch.pieces.forEach((piece, index) => {
-        this.matrix.makeTranslation(piece.x, piece.y + FLOOR_HEIGHT, piece.z);
+        const point = this.positionInFrame(piece.x, piece.z);
+        this.position.set(point.x - origin.x, piece.y + FLOOR_HEIGHT, point.z - origin.z);
+        this.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), this.rotationInFrame({ ...piece, rotation: 0 }));
+        this.matrix.compose(this.position, this.quaternion, new THREE.Vector3(1, 1, 1));
         mesh.setMatrixAt(index, this.matrix);
       });
       mesh.instanceMatrix.needsUpdate = true;
       mesh.receiveShadow = true;
-      mesh.frustumCulled = false;
       this.group.add(mesh);
       this.meshes.push(mesh);
       this.roofGeometries.push(geometry);
@@ -221,6 +257,7 @@ export class ConstructionRenderer {
   }
 
   update(dt: number, player: THREE.Vector3, camera?: THREE.Vector3, renderOrigin?: THREE.Vector3) {
+    const changedDoors = new Set<THREE.InstancedMesh>();
     for (const { piece, mesh, index } of this.doors) {
       const current = this.angles.get(piece.id) ?? 0;
       const target = piece.open ? Math.PI / 2 : 0;
@@ -229,13 +266,20 @@ export class ConstructionRenderer {
       this.angles.set(piece.id, next);
       this.setMatrix(mesh, index, piece, parts.door[0], next);
       mesh.instanceMatrix.needsUpdate = true;
+      changedDoors.add(mesh);
     }
+    for (const mesh of changedDoors) mesh.computeBoundingSphere();
     this.occlusionTimer -= dt;
     if (camera && this.occlusionTimer <= 0) {
       this.group.updateMatrixWorld(true);
       this.occlusionPlayer.copy(player);
       this.occlusionCamera.copy(camera);
-      if (renderOrigin) {
+      if (this.tangentFrame) {
+        const playerPoint = this.positionInFrame(player.x, player.z);
+        const cameraPoint = this.positionInFrame(camera.x, camera.z);
+        this.occlusionPlayer.set(playerPoint.x, player.y, playerPoint.z);
+        this.occlusionCamera.set(cameraPoint.x, camera.y, cameraPoint.z);
+      } else if (renderOrigin) {
         this.occlusionPlayer.sub(renderOrigin);
         this.occlusionCamera.sub(renderOrigin);
       }
@@ -271,7 +315,7 @@ export class ConstructionRenderer {
   }
 
   private setMatrix(mesh: THREE.InstancedMesh, index: number, piece: StructuralPiece, part: Part, doorAngle: number) {
-    const rotation = piece.rotation * Math.PI / 2;
+    const rotation = this.rotationInFrame(piece);
     const offset = new THREE.Vector3(...part.offset);
     if (piece.kind === 'door') {
       offset.x += 0.725;
@@ -279,7 +323,8 @@ export class ConstructionRenderer {
       offset.x -= 0.725;
     }
     offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), rotation);
-    this.position.set(piece.x + offset.x, piece.y + offset.y, piece.z + offset.z);
+    const point = this.positionInFrame(piece.x, piece.z);
+    this.position.set(point.x - mesh.position.x + offset.x, piece.y + offset.y, point.z - mesh.position.z + offset.z);
     this.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), rotation + doorAngle);
     this.scale.set(...part.size);
     this.matrix.compose(this.position, this.quaternion, this.scale);
