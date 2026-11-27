@@ -68,11 +68,12 @@ await document.transform(prune(), dedup(), weld());
 for (const mesh of document.getRoot().listMeshes()) {
   for (const primitive of mesh.listPrimitives()) {
     const material = primitive.getMaterial()?.getName();
-    if (material === 'tree_small_02_leaves' || material === 'fir_sapling_twigs' || material === 'pine_sapling_small_twig' || material === 'pine_tree_01_twig'
+    if (material === 'tree_small_02_leaves' || material === 'fir_sapling_twigs' || material === 'pine_sapling_small_twig' || material === 'pine_tree_01_twig' || material === 'fir_tree_01_twig'
       || material === 'grass_medium_02' || material === 'fern_02' || material === 'shrub_03') {
       if (material === 'tree_small_02_leaves') primitive.getMaterial().setAlphaMode('MASK').setAlphaCutoff(0.35);
-      reduceLeafClusters(primitive, material === 'fir_sapling_twigs' || material === 'pine_sapling_small_twig' || material === 'pine_tree_01_twig',
-        material === 'grass_medium_02' || material === 'fern_02' || material === 'shrub_03', material === 'pine_tree_01_twig');
+      reduceLeafClusters(primitive, material === 'fir_sapling_twigs' || material === 'pine_sapling_small_twig' || material === 'pine_tree_01_twig' || material === 'fir_tree_01_twig',
+        material === 'grass_medium_02' || material === 'fern_02' || material === 'shrub_03', material === 'pine_tree_01_twig' || material === 'fir_tree_01_twig',
+        material === 'fir_tree_01_twig');
       continue;
     }
     const triangles = Math.floor((primitive.getIndices()?.getCount() ?? 0) / 3);
@@ -81,7 +82,7 @@ for (const mesh of document.getRoot().listMeshes()) {
     }
   }
 
-  function reduceLeafClusters(primitive, conifer, plant, adultConifer = false) {
+  function reduceLeafClusters(primitive, conifer, plant, adultConifer = false, adultFir = false) {
     const index = primitive.getIndices()?.getArray();
     const position = primitive.getAttribute('POSITION')?.getArray();
     if (!(index instanceof Uint32Array || index instanceof Uint16Array) || !(position instanceof Float32Array)) {
@@ -139,7 +140,7 @@ for (const mesh of document.getRoot().listMeshes()) {
         }
       });
       const desired = plant ? Math.max(3, Math.floor(triangles.length * target / index.length / 3) * 3)
-        : adultConifer ? structural ? 24 : 12 : structural ? 90 : 12;
+        : adultConifer ? structural ? 24 : adultFir ? 6 : 12 : structural ? 90 : 12;
       const [reduced] = MeshoptSimplifier.simplify(localIndex, localPosition, 3,
         Math.min(desired, localIndex.length), 0.5);
       const remap = new Map();

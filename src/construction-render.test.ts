@@ -43,6 +43,58 @@ describe('construction visibility', () => {
     expect(opacity.getX(1)).toBeCloseTo(1);
   });
 
+  it('clears only upper floors that obstruct the player and restores them when viewed from below', () => {
+    const floor = (id: string, x: number, y: number): StructuralPiece => ({
+      id, kind: 'floor', x, z: 0, y, level: y === 0 ? 0 : 1, rotation: 0, open: false,
+    });
+    const renderer = new ConstructionRenderer();
+    renderer.refresh([floor('ground', 0, 0), floor('ceiling', 0, 2.4), floor('other', 10, 2.4)]);
+    const mesh = renderer.group.children.find(child => child instanceof THREE.InstancedMesh
+      && child.userData.constructionKind === 'floor') as THREE.InstancedMesh;
+    const faded = renderer.group.children.find(child => child instanceof THREE.InstancedMesh
+      && child !== mesh && child.geometry === mesh.geometry) as THREE.InstancedMesh;
+    const material = mesh.material as THREE.Material;
+    expect(material.transparent).toBe(false);
+    expect(material.depthWrite).toBe(true);
+    expect(faded.visible).toBe(false);
+    expect((faded.material as THREE.Material).transparent).toBe(true);
+    expect((faded.material as THREE.Material).depthWrite).toBe(false);
+    expect(faded.castShadow).toBe(false);
+    renderer.update(1, new THREE.Vector3(0, 0.18, 0), new THREE.Vector3(0, 5, 0));
+    expect(faded.visible).toBe(true);
+    const opacity = mesh.geometry.getAttribute('instanceOpacity');
+    expect(opacity.getX(0)).toBeCloseTo(1);
+    expect(opacity.getX(1)).toBeLessThan(0.35);
+    expect(opacity.getX(2)).toBeCloseTo(1);
+    renderer.update(2, new THREE.Vector3(0, 0.18, 0), new THREE.Vector3(0, 2, 0));
+    expect(opacity.getX(0)).toBeCloseTo(1);
+    expect(opacity.getX(1)).toBeGreaterThan(0.98);
+    expect(opacity.getX(2)).toBeCloseTo(1);
+    expect(faded.visible).toBe(false);
+  });
+
+  it('preserves floor clearance across refresh and disposes the old shared geometry', () => {
+    const piece: StructuralPiece = { id: 'ceiling', kind: 'floor', x: 0, z: 0, y: 2.4, level: 1, rotation: 0, open: false };
+    const renderer = new ConstructionRenderer();
+    renderer.refresh([piece]);
+    renderer.update(1, new THREE.Vector3(0, 0.18, 0), new THREE.Vector3(0, 5, 0));
+    const old = renderer.group.children.find(child => child instanceof THREE.InstancedMesh
+      && child.userData.constructionKind === 'floor') as THREE.InstancedMesh;
+    let disposed = false;
+    old.geometry.addEventListener('dispose', () => { disposed = true; });
+    renderer.refresh([piece]);
+    expect(disposed).toBe(true);
+    const opaque = renderer.group.children.find(child => child instanceof THREE.InstancedMesh
+      && child.userData.constructionKind === 'floor') as THREE.InstancedMesh;
+    const faded = renderer.group.children.find(child => child instanceof THREE.InstancedMesh
+      && child !== opaque && child.geometry === opaque.geometry) as THREE.InstancedMesh;
+    expect(faded.visible).toBe(true);
+    expect(opaque.geometry.getAttribute('instanceOpacity').getX(0)).toBeLessThan(0.35);
+    expect(Array.from(faded.instanceMatrix.array)).toEqual(Array.from(opaque.instanceMatrix.array));
+    renderer.refresh([]);
+    expect(renderer.group.children).toHaveLength(0);
+  });
+
   it('keeps construction occlusion aligned with a translated render origin', () => {
     const renderer = new ConstructionRenderer();
     renderer.refresh([{

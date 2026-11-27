@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { angleDelta, cameraRelativeMovement, clampCameraDistance, dampAngle } from './camera';
+import { angleDelta, cameraPitchView, cameraRelativeMovement, clampCameraDistance, clampCameraPitch, dampAngle } from './camera';
 
 describe('third-person camera', () => {
   it('moves in screen coordinates for any camera yaw', () => {
@@ -19,5 +19,15 @@ describe('third-person camera', () => {
     expect(dampAngle(Math.PI - 0.1, -Math.PI + 0.1, 5, 1)).toBeGreaterThan(Math.PI - 0.1);
     expect(clampCameraDistance(1)).toBe(5);
     expect(clampCameraDistance(100)).toBe(24);
+  });
+  it('keeps the existing downward orbit but raises aim without putting the camera under the ground', () => {
+    expect(cameraPitchView(0.48)).toEqual({ orbit: 0.48, aimSlope: 0 });
+    expect(cameraPitchView(0.1)).toEqual({ orbit: 0.1, aimSlope: 0 });
+    const upward = cameraPitchView(-1.15);
+    expect(upward.orbit).toBe(0.1);
+    expect(Math.atan(upward.aimSlope - Math.tan(upward.orbit))).toBeGreaterThan(Math.PI / 3);
+    expect(clampCameraPitch(-100)).toBe(-1.15);
+    expect(clampCameraPitch(100)).toBe(1.05);
+    expect(cameraPitchView(-100)).toEqual(upward);
   });
 });

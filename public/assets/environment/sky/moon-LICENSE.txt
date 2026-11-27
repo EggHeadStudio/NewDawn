@@ -1,0 +1,19 @@
+Moon texture by Solar System Scope / INOVE
+Source: https://www.solarsystemscope.com/textures/
+Original: https://www.solarsystemscope.com/textures/download/2k_moon.jpg
+License: Creative Commons Attribution 4.0 International
+https://creativecommons.org/licenses/by/4.0/
+
+The source publisher permits use, adaptation and sharing, including commercial
+use, under this license. No endorsement of NewDawn is implied.
+
+NewDawn modifications: resized from 2048x1024 to 256x128 and JPEG-recompressed.
+The map is rendered with NewDawn's existing phase/cloud shader and adjusted
+surface intensity. The publisher describes the pack as NASA-data-based, with
+artistic adjustments and possible fictional gap fills; this is game art, not
+a scientifically authoritative lunar visualization.
+
+Original SHA-256:
+2764ba6535ea0481a062846ee033cc7a909dae05b31a8fd13f3e98f3a7fd92bd
+Runtime JPEG SHA-256:
+6ac539595f6ff914fab9c9740c8b3b82b8ebd10feaf60016622291cccbc4caaf

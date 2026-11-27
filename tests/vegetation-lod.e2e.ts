@@ -245,12 +245,15 @@ test('distinct fir and pine prototypes load with shared foliage detail', async (
       && object.userData.vegetationFamily === 'conifer');
     const deadline = performance.now() + 30000;
     while ((!found().some(tree => tree.userData.treeSpecies === 'pine')
-      || !found().some(tree => tree.userData.treeSpecies === 'spruce')) && performance.now() < deadline) {
+      || !found().some(tree => tree.userData.treeSpecies === 'spruce' && tree.userData.natureVariant === 'default')
+      || !found().some(tree => tree.userData.treeSpecies === 'spruce' && tree.userData.natureVariant === 'young-fir'))
+      && performance.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
-    const inspect = (species: string) => {
-      const tree = found().find(object => object.userData.treeSpecies === species);
-      if (!tree) throw new Error(`Missing authored ${species} visual`);
+    const inspect = (species: string, variant?: string) => {
+      const tree = found().find(object => object.userData.treeSpecies === species
+        && (!variant || object.userData.natureVariant === variant));
+      if (!tree) throw new Error(`Missing authored ${species} ${variant ?? ''} visual`);
       let foliageMaterial = '';
       let hasDetail = false;
       tree.traverse(object => {
@@ -262,10 +265,12 @@ test('distinct fir and pine prototypes load with shared foliage detail', async (
       return { foliageMaterial, hasDetail };
     };
     const pine = inspect('pine');
-    const fir = inspect('spruce');
+    const fir = inspect('spruce', 'default');
+    const young = inspect('spruce', 'young-fir');
     world.dispose();
-    return { pine, fir };
+    return { pine, fir, young };
   });
   expect(result.pine).toEqual({ foliageMaterial: 'pine_sapling_small_twig', hasDetail: true });
   expect(result.fir).toEqual({ foliageMaterial: 'fir_sapling_twigs', hasDetail: true });
+  expect(result.young).toEqual({ foliageMaterial: 'fir_tree_01_twig', hasDetail: true });
 });

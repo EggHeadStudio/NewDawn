@@ -2,9 +2,9 @@ import * as THREE from 'three';
 import { onboardingObjective, type OnboardingState } from './onboarding';
 import './style.css';
 import { World, safeSpawn, seededNoise } from './world';
-import { FoliageClearance } from './tree-occlusion';
+import { TreeClearance } from './tree-occlusion';
 import { atlasBiomeAtCell, atlasBiomeColors } from './atlas';
-import { cameraRelativeMovement, clampCameraDistance, dampAngle, defaultCameraSettings } from './camera';
+import { cameraPitchView, cameraRelativeMovement, clampCameraDistance, clampCameraPitch, dampAngle, defaultCameraSettings } from './camera';
 import { buildingCosts, buildingRadius, canAfford, placementProblem, craftTool, isNight, spend, type BuildingKind, type Inventory, type Tool } from './gameplay';
 import { isSaveData } from './save';
 import { chooseNpcActivity, type NpcJob, type NpcState } from './npc';
@@ -35,7 +35,7 @@ import { reconcileRoof, reshapeRoof, type RoofAxis, type RoofRequest } from './r
 import { ConstructionRenderer, createPieceGhost } from './construction-render';
 import { emptyMinerals } from './economy';
 import { advanceSmelting, startSmelting, type SmeltableOre, type SmeltingJob } from './smelting';
-import { atmosphericFogRange, environmentLighting } from './environment-lighting';
+import { atmosphericFogRange, environmentLighting, moonlitSceneLighting } from './environment-lighting';
 import { celestialState, Sky } from './sky';
 import { WaterEffects } from './water-effects';
 import { FrameSamples, SustainedBenchmark } from './performance-monitor';
@@ -64,7 +64,7 @@ app.innerHTML = `
   <canvas id="game"></canvas>
   <div id="menu" class="screen active">
     <div class="menu-vignette"></div>
-    <div class="brand"><div class="brand-mark">ND</div><div><span>EggHeadStudio</span><h1>NEW DAWN</h1></div></div>
+    <div class="brand"><span>EggHeadStudio</span><h1><img class="brand-logo" src="${import.meta.env.BASE_URL}assets/branding/newdawn-logo.png" width="1024" height="341" alt="NEW DAWN" /></h1></div>
     <div class="menu-card">
       <h2>BEGIN A WORLD</h2>
       <label>World name <input id="worldName" value="Pinehaven"/></label>
@@ -213,7 +213,7 @@ app.innerHTML = `
     <label class="setting">Quality <select id="graphicsQuality"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></label>
     <button id="showPerformance" class="secondary" type="button">SHOW PERFORMANCE MONITOR</button>
     <button id="skipIntroduction" class="secondary">SKIP INTRODUCTION</button><button id="restartIntroduction" class="secondary">RESTART INTRODUCTION</button>
-    <p>Game version: ${__APP_VERSION__}</p><button id="exitFullscreen" class="secondary">EXIT FULLSCREEN</button>
+    <p>Game version: ${__APP_VERSION__}<br><a href="${import.meta.env.BASE_URL}assets/environment/sky/moon-LICENSE.txt" target="_blank" rel="noopener" style="color:inherit">Moon texture: Solar System Scope (CC BY 4.0)</a></p><button id="exitFullscreen" class="secondary">EXIT FULLSCREEN</button>
     <button id="resumeGame" class="primary">RESUME</button><button id="saveGame" class="secondary">SAVE WORLD</button><button id="returnMenu" class="secondary">MAIN MENU</button></div>
   <div id="updatePanel" class="update-panel hidden" role="dialog" aria-labelledby="updateTitle"><strong id="updateTitle">New Dawn Update Available</strong><p>Save your world and restart to play the new version.</p><div><button id="applyUpdate" class="primary">UPDATE NOW</button><button id="laterUpdate" class="secondary">LATER</button></div></div>
   <div id="toast" class="toast"></div>
@@ -235,7 +235,8 @@ const gl = renderer.getContext();
 const foliageAlphaCoverage = gl.getContextAttributes()?.antialias === true && Number(gl.getParameter(gl.SAMPLES)) > 1;
 
 const scene = new THREE.Scene();
-const sky = new Sky(scene);
+const sky = new Sky(scene, renderer);
+void sky.loadMoonSurface().catch(error => console.error('Failed to load local Moon surface; retaining the plain disc.', error));
 const effects = new Effects(scene);
 const waterEffects = new WaterEffects(scene);
 const precipitation = new Precipitation(scene);
@@ -390,6 +391,8 @@ if (import.meta.env.DEV) {
       player: { x: player.position.x, y: player.position.y, z: player.position.z, yaw: player.rotation.y },
       runtimeFrame: { latitude: runtimeFrame.tangent.origin.latitude, longitude: runtimeFrame.tangent.origin.longitude },
       cameraAngle, grounded, stones, selectedWeapon, animationAction, animationActionTime, lastStoneImpact,
+      cameraView: { pitch: cameraPitch, directionY: camera.getWorldDirection(new THREE.Vector3()).y,
+        groundClearance: cameraGlobalPosition.y - world.heightAt(cameraGlobalPosition.x, cameraGlobalPosition.z) },
       swimming, waterContact, waterEffects: waterEffects.activeCount,
       impactEffects: effects.activeCount,
       lastImpactEffect: effects.lastImpact,
@@ -415,6 +418,7 @@ if (import.meta.env.DEV) {
           mineral: object.userData.mineral as string };
       }),
       groundArt: {
+        hiddenByFloors: world.hiddenFloorCoverCount,
         stones: world.group.children.filter(object => object.userData.resource === 'stone' && object.userData.natureGround).length,
         deposits: world.group.children.filter(object => object.userData.depositId
           && object.children.some(child => child.userData.depositRock && child.userData.natureGround)).length,
@@ -458,8 +462,8 @@ if (import.meta.env.DEV) {
         tree.traverse(object => {
           if (!(object instanceof THREE.Mesh)) return;
           for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
-            const clearance: unknown = material.userData.foliageClearance;
-            if (clearance instanceof FoliageClearance && clearance.amount.value > 0.1) active++;
+            const clearance: unknown = material.userData.treeClearance;
+            if (/leaves|twig/i.test(material.name) && clearance instanceof TreeClearance && clearance.amount.value > 0.1) active++;
           }
         });
       }
@@ -473,10 +477,10 @@ if (import.meta.env.DEV) {
         tree.traverse(object => {
           if (!(object instanceof THREE.Mesh)) return;
           for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
-            const clearance: unknown = material.userData.foliageClearance;
-            if (!(clearance instanceof FoliageClearance)) continue;
+            const clearance: unknown = material.userData.treeClearance;
+            if (!/leaves|twig/i.test(material.name) || !(clearance instanceof TreeClearance)) continue;
             clearance.amount.value = 0;
-            delete material.userData.foliageClearance;
+            delete material.userData.treeClearance;
           }
         });
       }
@@ -537,6 +541,7 @@ const cameraRay = new THREE.Raycaster();
 const renderOrigin = runtimeFrame.renderOrigin;
 const cameraGlobalPosition = new THREE.Vector3();
 const cameraFocus = new THREE.Vector3();
+const cameraAim = new THREE.Vector3();
 const cameraDesired = new THREE.Vector3();
 let cameraReady = false;
 let preview: CharacterPreview | undefined;
@@ -663,7 +668,7 @@ document.addEventListener('pointerlockerror', () => {
 document.addEventListener('mousemove', event => {
   if (document.pointerLockElement !== canvas || gameplayBlocked() || buildMode) return;
   cameraAngle -= event.movementX * 0.006 * mouseSensitivity;
-  cameraPitch = THREE.MathUtils.clamp(cameraPitch + event.movementY * 0.004 * mouseSensitivity * (invertMouse ? -1 : 1), 0.1, 1.05);
+  cameraPitch = clampCameraPitch(cameraPitch + event.movementY * 0.004 * mouseSensitivity * (invertMouse ? -1 : 1));
   manualCamera();
 });
 canvas.addEventListener('contextmenu', event => event.preventDefault());
@@ -749,11 +754,11 @@ canvas.addEventListener('pointermove', event => {
     (document.querySelector('#cameraDistance') as HTMLInputElement).value = String(cameraSettings.distance);
     if (buildMode) {
       cameraAngle -= dx * 0.003 * cameraSettings.rotationSpeed;
-      cameraPitch = THREE.MathUtils.clamp(cameraPitch + dy * 0.002 * cameraSettings.rotationSpeed, 0.1, 1.05);
+      cameraPitch = clampCameraPitch(cameraPitch + dy * 0.002 * cameraSettings.rotationSpeed);
     }
   } else if (!buildMode || event.pointerType === 'mouse') {
     cameraAngle -= dx * 0.006 * cameraSettings.rotationSpeed;
-    cameraPitch = THREE.MathUtils.clamp(cameraPitch + dy * 0.004 * cameraSettings.rotationSpeed, 0.1, 1.05);
+    cameraPitch = clampCameraPitch(cameraPitch + dy * 0.004 * cameraSettings.rotationSpeed);
   }
   manualCamera();
 });
@@ -1026,6 +1031,7 @@ fogStartInput.value = String(fogStart);
 fogEndInput.value = String(fogEnd);
 graphicsQualityInput.value = graphicsQuality;
 world.setVegetationQuality(graphicsQuality);
+sky.setQuality(graphicsQuality);
 renderer.shadowMap.enabled = graphicsQuality !== 'low';
 sun.shadow.mapSize.set(graphicsQuality === 'high' ? 2048 : graphicsQuality === 'medium' ? 1024 : 512, graphicsQuality === 'high' ? 2048 : graphicsQuality === 'medium' ? 1024 : 512);
 onResize();
@@ -1038,6 +1044,7 @@ fogEndInput.addEventListener('input', () => { fogEnd = Number(fogEndInput.value)
 graphicsQualityInput.addEventListener('change', () => {
   graphicsQuality = graphicsQualityInput.value as typeof graphicsQuality;
   world.setVegetationQuality(graphicsQuality);
+  sky.setQuality(graphicsQuality);
   renderer.shadowMap.enabled = graphicsQuality !== 'low';
   sun.shadow.mapSize.set(graphicsQuality === 'high' ? 2048 : graphicsQuality === 'medium' ? 1024 : 512, graphicsQuality === 'high' ? 2048 : graphicsQuality === 'medium' ? 1024 : 512);
   onResize();
@@ -1078,17 +1085,15 @@ document.querySelector('#exitFullscreen')!.addEventListener('click', () => {
 document.querySelector('#pauseButton')!.addEventListener('click', togglePause);
 document.querySelector('#resumeGame')!.addEventListener('click', togglePause);
 document.querySelector('#saveGame')!.addEventListener('click', () => saveGame(true));
-document.querySelector('#skipIntroduction')!.addEventListener('click', () => {
+document.querySelector('#skipIntroduction')!.addEventListener('click', async () => {
   onboarding.mode = 'free';
   updateObjective();
-  void saveGame(false);
-  toast('Introduction skipped');
+  if (await saveGame(false)) toast('Introduction skipped');
 });
-document.querySelector('#restartIntroduction')!.addEventListener('click', () => {
+document.querySelector('#restartIntroduction')!.addEventListener('click', async () => {
   onboarding = { mode: 'guide', gathered: false, openedPack: false };
   updateObjective();
-  void saveGame(false);
-  toast('Introduction restarted');
+  if (await saveGame(false)) toast('Introduction restarted');
 });
 document.querySelector('#returnMenu')!.addEventListener('click', () => location.reload());
 document.querySelector('#closeBuild')!.addEventListener('click', cancelBuild);
@@ -1313,12 +1318,11 @@ document.querySelector('#forgePickaxe')!.addEventListener('click', () => {
   toast('Iron pickaxe forged');
   void saveGame(false);
 });
-document.querySelector('#npcRecruit')!.addEventListener('click', () => {
+document.querySelector('#npcRecruit')!.addEventListener('click', async () => {
   npcState.recruited = true;
-  toast('Mira joined your settlement');
   refreshNpcPanel();
   updateObjective();
-  void saveGame(false);
+  if (await saveGame(false)) toast('Mira joined your settlement');
 });
 document.querySelectorAll<HTMLButtonElement>('[data-job]').forEach(button => button.addEventListener('click', () => {
   if (!npcState.recruited) { toast('Recruit Mira first'); return; }
@@ -1459,6 +1463,12 @@ function resetWorld() {
   gameMinutes = 360;
 }
 
+function aimFollowCamera(slope: number) {
+  cameraAim.copy(cameraFocus);
+  cameraAim.y += Math.hypot(cameraGlobalPosition.x - cameraFocus.x, cameraGlobalPosition.z - cameraFocus.z) * slope;
+  camera.lookAt(runtimeFrame.projectedToRender(cameraAim));
+}
+
 function startGame() {
   preview?.dispose();
   preview = undefined;
@@ -1468,14 +1478,15 @@ function startGame() {
   cameraFocus.set(focus.x, focus.y + (driving ? 1.9 : 1.8), focus.z);
   const inRoom = !driving && Boolean(constructionRenderer.shelter.roomAt(focus.x, focus.y, focus.z));
   const distance = Math.min(inRoom ? 6 : 24, cameraSettings.distance + (driving ? 2 : 0));
-  const horizontal = distance * Math.cos(cameraPitch);
+  const pitch = cameraPitchView(cameraPitch);
+  const horizontal = distance * Math.cos(pitch.orbit);
   cameraGlobalPosition.set(
     cameraFocus.x + Math.sin(cameraAngle) * horizontal,
-    cameraFocus.y + distance * Math.sin(cameraPitch),
+    cameraFocus.y + distance * Math.sin(pitch.orbit),
     cameraFocus.z + Math.cos(cameraAngle) * horizontal,
   );
   runtimeFrame.projectedToRender(cameraGlobalPosition, camera.position);
-  camera.lookAt(runtimeFrame.projectedToRender(cameraFocus));
+  aimFollowCamera(pitch.aimSlope);
   cameraReady = true;
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   document.querySelector('#menu')!.classList.remove('active');
@@ -1847,6 +1858,7 @@ function removeTargetPiece() {
   refreshPaintMarkers();
   const roofMessage = piece.kind === 'wall' || piece.kind === 'doorframe' || piece.kind === 'windowframe' ? reconcileRoofs(piece) : null;
   constructionRenderer.refresh(structures, surfacePaint);
+  if (piece.kind === 'floor') world.setFloorCover(structures);
   updateResources();
   updateObjective();
   updatePlacement();
@@ -2046,6 +2058,7 @@ function placeBuilding() {
     if (piece.kind === 'window') ingots.glass--;
     const roofMessage = piece.kind === 'wall' || piece.kind === 'doorframe' || piece.kind === 'windowframe' ? reconcileRoofs(piece) : null;
     constructionRenderer.refresh(structures, surfacePaint);
+    if (piece.kind === 'floor') world.setFloorCover(structures);
     animationAction = 'build';
     animationActionTime = 0.6;
     effects.burst(buildTarget.clone().add(new THREE.Vector3(0, 0.3, 0)), 'build');
@@ -2926,15 +2939,15 @@ function updateGame(dt: number) {
   if (shelterStatus.textContent !== shelter.toUpperCase()) shelterStatus.textContent = shelter.toUpperCase();
   const celestial = celestialState(gameMinutes, day, mapPosition.latitude);
   const lighting = environmentLighting(gameMinutes, weather, celestial.sun.y);
+  const moonlit = moonlitSceneLighting(lighting, celestial.illumination, celestial.moon.y);
   if (scene.fog instanceof THREE.Fog) {
     const fog = atmosphericFogRange(fogStart, fogEnd, renderDistance, graphicsQuality, weather, lighting.daylight, positionHeight);
     scene.fog.near = THREE.MathUtils.damp(scene.fog.near, fog.near, 1.5, dt);
     scene.fog.far = THREE.MathUtils.damp(scene.fog.far, fog.far, 1.5, dt);
   }
-  ambient.intensity = THREE.MathUtils.damp(ambient.intensity, lighting.hemisphere, 5, dt);
+  ambient.intensity = THREE.MathUtils.damp(ambient.intensity, moonlit.hemisphere, 5, dt);
   sun.intensity = THREE.MathUtils.damp(sun.intensity, lighting.sunlight, 5, dt);
-  moon.intensity = THREE.MathUtils.damp(moon.intensity, lighting.moonlight
-    * celestial.illumination * THREE.MathUtils.smoothstep(celestial.moon.y, 0, 0.08), 5, dt);
+  moon.intensity = THREE.MathUtils.damp(moon.intensity, moonlit.moonlight, 5, dt);
   ambient.color.lerpColors(nightAmbient, dayAmbient, lighting.daylight);
   ambient.groundColor.lerpColors(nightGround, dayGround, lighting.daylight);
   sun.color.lerpColors(noonSun, twilightSun, lighting.twilight);
@@ -3177,10 +3190,11 @@ function updateGame(dt: number) {
   cameraFocus.lerp(look, 1 - Math.exp(-cameraSettings.smoothing * dt));
   const inRoom = !driving && Boolean(constructionRenderer.shelter.roomAt(player.position.x, player.position.y, player.position.z));
   const distance = Math.min(inRoom ? 6 : 24, cameraSettings.distance + (driving ? 2 : 0));
-  const horizontal = distance * Math.cos(cameraPitch);
+  const pitch = cameraPitchView(cameraPitch);
+  const horizontal = distance * Math.cos(pitch.orbit);
   cameraDesired.set(
     cameraFocus.x + Math.sin(cameraAngle) * horizontal,
-    cameraFocus.y + distance * Math.sin(cameraPitch),
+    cameraFocus.y + distance * Math.sin(pitch.orbit),
     cameraFocus.z + Math.cos(cameraAngle) * horizontal,
   );
   const rayDirection = cameraDesired.clone().sub(cameraFocus);
@@ -3204,7 +3218,7 @@ function updateGame(dt: number) {
   cameraGlobalPosition.lerp(cameraDesired, 1 - Math.exp(-cameraSettings.smoothing * dt));
   cameraGlobalPosition.y = Math.max(cameraGlobalPosition.y, world.heightAt(cameraGlobalPosition.x, cameraGlobalPosition.z) + 0.5);
   runtimeFrame.projectedToRender(cameraGlobalPosition, camera.position);
-  camera.lookAt(runtimeFrame.projectedToRender(cameraFocus));
+  aimFollowCamera(pitch.aimSlope);
   if (scene.background instanceof THREE.Color) {
     sky.update(cameraGlobalPosition, celestial, lighting.daylight, lighting.twilight, scene.background, weather, wind, dt);
   }
@@ -3755,6 +3769,7 @@ async function loadGame() {
         buildingRecords.push({ ...record, charge: record.charge ?? 0, powered: false });
       });
       structures.push(...(save.structures ?? []).map(piece => ({ ...piece })));
+      world.setFloorCover(structures);
       roads.splice(0, roads.length, ...(save.roads ?? []).map(road => ({ ...road })));
       surfacePaint.splice(0, surfacePaint.length, ...(save.paint ?? []).map(paint => ({ ...paint, strokes: paint.strokes.map(stroke => ({ ...stroke })) })));
       if (save.atlas) {

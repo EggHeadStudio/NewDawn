@@ -1,0 +1,50 @@
+[
+  {
+    "variant": "before",
+    "before": {
+      "x": 33.71410655975342,
+      "y": 0.5912400308416798,
+      "z": 6671709.58294794,
+      "yaw": 3.9215926535897934
+    },
+    "after": {
+      "x": -108.2622001171112,
+      "y": 0.5910864782780177,
+      "z": 6671637.822397053,
+      "yaw": 3.9215733544479914
+    },
+    "rendering": {
+      "calls": 147,
+      "triangles": 698504,
+      "geometries": 86,
+      "textures": 80,
+      "foliageAlphaCoverage": true
+    },
+    "stationary": "30-second test complete (30.0 s, 1801 frames)\nFPS avg 60.0  median 59.9\nFrame avg 16.7 ms  p95 16.7 ms  spikes >50 ms 0\nQuality low, render 390 x 844, pixel ratio 1.00\nFPS 59.9  avg 60.0  median 59.9\nFrame avg 16.7 ms  p95 16.7 ms (300 frames)\nLive scene snapshot:\nCalls 137  triangles 882305\nGeometries 70  textures 80\nChunks 9  cover instances 1410\nAuthored trees near 36  mid 97\nRender 390 x 844  pixel ratio 1.00\nQuality low  terrain atlases ready\nFrame timings are browser observations, not GPU timings.",
+    "report": "30-second test complete (30.0 s, 1796 frames)\nFPS avg 59.8  median 59.9\nFrame avg 16.7 ms  p95 16.7 ms  spikes >50 ms 1\nQuality low, render 390 x 844, pixel ratio 1.00\nFPS 59.9  avg 60.0  median 59.9\nFrame avg 16.7 ms  p95 16.7 ms (300 frames)\nLive scene snapshot:\nCalls 150  triangles 813112\nGeometries 86  textures 80\nChunks 9  cover instances 1158\nAuthored trees near 16  mid 117\nRender 390 x 844  pixel ratio 1.00\nQuality low  terrain atlases ready\nFrame timings are browser observations, not GPU timings."
+  },
+  {
+    "variant": "canopy-shadows",
+    "before": {
+      "x": 33.71410655975342,
+      "y": 0.5912400308416798,
+      "z": 6671709.58294794,
+      "yaw": 3.9215926535897934
+    },
+    "after": {
+      "x": -108.42012396454811,
+      "y": 0.5910863074635656,
+      "z": 6671637.742573656,
+      "yaw": 3.9215733329811373
+    },
+    "rendering": {
+      "calls": 147,
+      "triangles": 698504,
+      "geometries": 86,
+      "textures": 80,
+      "foliageAlphaCoverage": true
+    },
+    "stationary": "30-second test complete (30.0 s, 1801 frames)\nFPS avg 60.0  median 59.9\nFrame avg 16.7 ms  p95 16.7 ms  spikes >50 ms 0\nQuality low, render 390 x 844, pixel ratio 1.00\nFPS 59.9  avg 60.0  median 59.9\nFrame avg 16.7 ms  p95 16.7 ms (300 frames)\nLive scene snapshot:\nCalls 137  triangles 908545\nGeometries 70  textures 80\nChunks 9  cover instances 1410\nAuthored trees near 36  mid 97\nRender 390 x 844  pixel ratio 1.00\nQuality low  terrain atlases ready\nFrame timings are browser observations, not GPU timings.",
+    "report": "30-second test complete (30.0 s, 1798 frames)\nFPS avg 59.9  median 59.9\nFrame avg 16.7 ms  p95 16.7 ms  spikes >50 ms 0\nQuality low, render 390 x 844, pixel ratio 1.00\nFPS 59.9  avg 60.0  median 59.9\nFrame avg 16.7 ms  p95 16.7 ms (300 frames)\nLive scene snapshot:\nCalls 147  triangles 698504\nGeometries 86  textures 80\nChunks 9  cover instances 1158\nAuthored trees near 16  mid 117\nRender 390 x 844  pixel ratio 1.00\nQuality low  terrain atlases ready\nFrame timings are browser observations, not GPU timings."
+  }
+]

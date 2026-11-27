@@ -58,6 +58,65 @@ async function save(page: Page) {
   await page.locator('#resumeGame').click();
 }
 
+test('floor cover clears on placement, persists on reload and returns on removal', async ({ page }) => {
+  test.setTimeout(120000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('./');
+  await page.locator('#newGame').click();
+  await save(page);
+  await setFixture(page, 'legacy');
+  await page.reload();
+  await page.locator('#continueGame').click();
+  const hidden = () => page.evaluate(() => (window as Window & { __newDawnState: () => {
+    groundArt: { hiddenByFloors: number };
+  } }).__newDawnState().groundArt.hiddenByFloors);
+  expect(await hidden()).toBe(0);
+  await page.locator('[data-tool="build"]').click();
+  await page.locator('[data-building="floor"]').click();
+  const scan = (excluded: string[], target?: string) => page.evaluate(({ excluded, target }) => {
+    const canvas = document.querySelector<HTMLCanvasElement>('#game')!;
+    const status = document.querySelector('#placementStatus')!;
+    const coordinates = document.querySelector('#placementCoordinates')!;
+    for (let y = 220; y <= 820; y += 12) for (let x = 140; x <= 1390; x += 12) {
+      if (document.elementFromPoint(x, y) !== canvas) continue;
+      canvas.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerType: 'mouse', clientX: x, clientY: y }));
+      const grid = /Grid (-?\d+), (-?\d+)/.exec(coordinates.textContent ?? '');
+      if (!grid) continue;
+      const key = `${grid[1]},${grid[2]}`;
+      if (target ? key === target : status.textContent === 'Ready to place' && !excluded.includes(key)) return { x, y, key };
+    }
+    return null;
+  }, { excluded, target });
+  const excluded: string[] = [];
+  let built: { x: number; y: number; key: string } | null = null;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const point = await scan(excluded);
+    if (!point) break;
+    excluded.push(point.key);
+    await page.mouse.move(point.x, point.y);
+    await page.locator('#confirmBuild').click();
+    await expect.poll(async () => (await readRecord(page)).structures.length).toBe(1);
+    if (await hidden() > 0) { built = point; break; }
+    await page.locator('#removePiece').click();
+    await expect.poll(async () => (await readRecord(page)).structures.length).toBe(0);
+  }
+  expect(built, 'No valid floor covering decorative vegetation').not.toBeNull();
+  const count = await hidden();
+  await page.keyboard.press('Escape');
+  await save(page);
+  await page.reload();
+  await page.locator('#continueGame').click();
+  await expect.poll(hidden).toBe(count);
+  await page.locator('[data-tool="build"]').click();
+  await page.locator('[data-building="floor"]').click();
+  const point = await scan([], built!.key);
+  expect(point).not.toBeNull();
+  await page.mouse.move(point!.x, point!.y);
+  await page.locator('#removePiece').click();
+  await expect.poll(hidden).toBe(0);
+  await expect.poll(async () => (await readRecord(page)).structures.length).toBe(0);
+});
+
 test('builds a room through the interface and reshapes its paid roof', async ({ page }) => {
   test.setTimeout(300000);
   const errors: string[] = [];

@@ -7,6 +7,143 @@ type Tree = { id: string; x: number; z: number; variant?: string; species?: stri
 type State = { trees: Tree[]; player: { x: number; z: number }; terrainReady: boolean;
   groundArt: { grass: number; shrubs: number } };
 
+test('authored foliage casts a cutout shadow onto visible ground', async ({ page }) => {
+  await page.goto('./');
+  const darkened = await page.evaluate(async () => {
+    const THREE = await import('/NewDawn/node_modules/three/build/three.module.js');
+    const { NatureAssets } = await import('/NewDawn/src/nature-assets.ts');
+    const { assets, tree } = await new Promise<{
+      assets: InstanceType<typeof NatureAssets>; tree: InstanceType<typeof THREE.Group>;
+    }>((resolve, reject) => {
+      let ready = false;
+      const timeout = setTimeout(() => reject(new Error('Conifer did not load')), 30000);
+      const assets = new NatureAssets(() => {
+        if (ready) return;
+        const tree = assets.create('conifer', 0);
+        if (!tree) return;
+        ready = true;
+        clearTimeout(timeout);
+        resolve({ assets, tree });
+      });
+    });
+    const renderer = new THREE.WebGLRenderer();
+    renderer.setSize(512, 512);
+    renderer.shadowMap.enabled = true;
+    const target = new THREE.WebGLRenderTarget(512, 512);
+    const scene = new THREE.Scene();
+    const camera = new THREE.OrthographicCamera(-8, 8, 8, -8, 0.1, 50);
+    camera.position.set(0, 20, 0);
+    camera.lookAt(0, 0, 0);
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(30, 30),
+      new THREE.MeshStandardMaterial({ color: '#ffffff' }));
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    const sun = new THREE.DirectionalLight('#ffffff', 3);
+    sun.position.set(8, 15, 5);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(1024, 1024);
+    Object.assign(sun.shadow.camera, { left: -10, right: 10, top: 10, bottom: -10 });
+    scene.add(tree, ground, sun, new THREE.AmbientLight('#ffffff', 0.3));
+    assets.wind.time.value = 2;
+    assets.wind.wind.value = 1;
+    const isMesh = (object: InstanceType<typeof THREE.Object3D>): object is InstanceType<typeof THREE.Mesh> =>
+      'isMesh' in object && object.isMesh === true;
+    const leaves: InstanceType<typeof THREE.Mesh>[] = [];
+    tree.traverse(object => {
+      if (isMesh(object) && object.customDepthMaterial) leaves.push(object);
+    });
+    const sample = () => {
+      renderer.setRenderTarget(target);
+      renderer.render(scene, camera);
+      const pixels = new Uint8Array(512 * 512 * 4);
+      renderer.readRenderTargetPixels(target, 0, 0, 512, 512, pixels);
+      return pixels;
+    };
+    try {
+      if (!leaves.length || leaves.some(leaf => !leaf.castShadow)) throw new Error('Canopy shadows are disabled');
+      leaves.forEach(leaf => { leaf.castShadow = false; });
+      const before = sample();
+      leaves.forEach(leaf => { leaf.castShadow = true; });
+      const after = sample();
+      let darker = 0;
+      for (let i = 0; i < before.length; i += 4) {
+        if (before[i] + before[i + 1] + before[i + 2] > after[i] + after[i + 1] + after[i + 2] + 24) darker++;
+      }
+      return darker;
+    } finally {
+      tree.traverse(object => {
+        if (!isMesh(object)) return;
+        for (const material of Array.isArray(object.material) ? object.material : [object.material]) material.dispose();
+        object.customDepthMaterial?.dispose();
+      });
+      assets.dispose();
+      ground.geometry.dispose();
+      ground.material.dispose();
+      sun.shadow.map?.dispose();
+      target.dispose();
+      renderer.dispose();
+    }
+  });
+  expect(darkened).toBeGreaterThan(100);
+});
+
+test('authored wood clears and restores only the local player sightline', async ({ page }) => {
+  await page.goto('./');
+  const samples = await page.evaluate(async () => {
+    const THREE = await import('/NewDawn/node_modules/three/build/three.module.js');
+    const { TreeClearance, installTreeClearance } = await import('/NewDawn/src/tree-occlusion.ts');
+    const renderer = new THREE.WebGLRenderer();
+    renderer.setSize(256, 256);
+    const target = new THREE.WebGLRenderTarget(256, 256);
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(90, 1, 0.1, 10);
+    camera.position.set(0, 1.05, 4);
+    camera.lookAt(0, 1.05, 0);
+    const material = new THREE.MeshStandardMaterial({ color: '#806044' });
+    installTreeClearance(material);
+    const branch = new THREE.Mesh(new THREE.BoxGeometry(4, 0.2, 0.1), material);
+    branch.position.set(0, 1.05, 2);
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.8, 0.1), new THREE.MeshBasicMaterial({ color: '#00ff00' }));
+    body.position.y = 1.05;
+    scene.add(branch, body, new THREE.AmbientLight('#ffffff', 3));
+    const clearance: unknown = material.userData.treeClearance;
+    if (!(clearance instanceof TreeClearance)) throw new Error('Wood has no localized clearance');
+    clearance.camera.value.copy(camera.position);
+    clearance.target.value.set(0, 1.05, 0);
+    const sample = () => {
+      renderer.setRenderTarget(target);
+      renderer.render(scene, camera);
+      const center = new Uint8Array(4), edge = new Uint8Array(4);
+      renderer.readRenderTargetPixels(target, 128, 128, 1, 1, center);
+      renderer.readRenderTargetPixels(target, 240, 128, 1, 1, edge);
+      return { center: [...center], edge: [...edge] };
+    };
+    try {
+      const before = sample();
+      clearance.amount.value = 1;
+      const cleared = sample();
+      clearance.amount.value = 0;
+      const restored = sample();
+      return { before, cleared, restored, opacity: material.opacity,
+        transparent: material.transparent, depthWrite: material.depthWrite };
+    } finally {
+      branch.geometry.dispose();
+      material.dispose();
+      body.geometry.dispose();
+      body.material.dispose();
+      target.dispose();
+      renderer.dispose();
+    }
+  });
+  expect(samples.before.center[0]).toBeGreaterThan(samples.before.center[1]);
+  expect(samples.cleared.center[1]).toBeGreaterThan(samples.cleared.center[0] + 100);
+  expect(samples.cleared.edge).toEqual(samples.before.edge);
+  expect(samples.restored).toEqual(samples.before);
+  expect(samples.opacity).toBe(1);
+  expect(samples.transparent).toBe(false);
+  expect(samples.depthWrite).toBe(true);
+});
+
 test('selective mature trees retain resource identity and depletion across reloads', async ({ page }) => {
   test.setTimeout(180000);
   const errors: string[] = [];
@@ -200,8 +337,8 @@ test('mature conifers render with the bounded local CC0 pine prototype', async (
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
-    const x = tree.x + 2;
-    const z = tree.z + 2;
+    const x = tree.x + 5;
+    const z = tree.z + 5;
     data.version = 11;
     delete data.planetPositions;
     data.player = { x, y: terrainHeight(x, z, Number(data.seed)), z };
@@ -225,5 +362,15 @@ test('mature conifers render with the bounded local CC0 pine prototype', async (
   await mkdir(directory, { recursive: true });
   await page.waitForTimeout(5000);
   await page.screenshot({ path: join(directory, 'mature-pine-boreal.png') });
+  await page.locator('#legacyCamera').evaluate((element: HTMLInputElement) => {
+    element.checked = true;
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await page.mouse.move(600, 350);
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.move(600, 200);
+  await page.mouse.up({ button: 'right' });
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: join(directory, 'mature-pine-canopy.png') });
   expect(errors).toEqual([]);
 });

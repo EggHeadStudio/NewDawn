@@ -6,6 +6,49 @@ import type { InstancedMesh, Mesh } from 'three';
 type Tree = { id: string; x: number; z: number; family: string; authored: boolean };
 type State = { trees: Tree[]; player: { x: number; z: number } };
 
+test('procedural wildflowers render distinct petals and stems in WebGL', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => {
+    if (message.type() === 'error' && /shader|webglprogram/i.test(message.text())) errors.push(message.text());
+  });
+  await page.goto('./');
+  const colors = await page.evaluate(async () => {
+    const THREE = await import('/NewDawn/node_modules/three/build/three.module.js');
+    const { World } = await import('/NewDawn/src/world.ts');
+    const world = new World(1847, 1);
+    const flowers = world.group.children.find((object): object is InstancedMesh =>
+      object.type === 'Mesh' && object.userData.groundCover === 'flower');
+    if (!flowers) throw new Error('No flower instances were generated');
+    const scene = new THREE.Scene();
+    scene.add(new THREE.AmbientLight(0xffffff, 2));
+    scene.add(new THREE.Mesh(flowers.geometry, flowers.material));
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 10);
+    camera.position.set(0.32, 0.3, 0.45);
+    camera.lookAt(0, 0, 0);
+    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setSize(128, 128);
+    renderer.render(scene, camera);
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 128;
+    const context = canvas.getContext('2d')!;
+    context.drawImage(renderer.domElement, 0, 0);
+    const pixels = context.getImageData(0, 0, 128, 128).data;
+    let light = 0, green = 0;
+    for (let i = 0; i < pixels.length; i += 4) {
+      const [r, g, b] = [pixels[i], pixels[i + 1], pixels[i + 2]];
+      if (r > 120 && g > 120 && b > 100) light++;
+      if (g > r * 1.08 && g > b * 1.15 && g > 30) green++;
+    }
+    renderer.dispose();
+    world.dispose();
+    return { light, green };
+  });
+  expect(colors.light).toBeGreaterThan(10);
+  expect(colors.green).toBeGreaterThan(10);
+  expect(errors).toEqual([]);
+});
+
 test('local rocks and instanced plants load into streamed gameplay', async ({ page }) => {
   test.setTimeout(180000);
   const errors: string[] = [];
@@ -18,7 +61,8 @@ test('local rocks and instanced plants load into streamed gameplay', async ({ pa
   await page.locator('#newGame').click();
   await expect.poll(async () => page.evaluate(() => {
     const snapshot = (window as Window & { __newDawnState: () => { groundArt: Record<string, number> } }).__newDawnState();
-    return Object.values(snapshot.groundArt).every(count => count > 0);
+    const { stones, deposits, grass, ferns, shrubs } = snapshot.groundArt;
+    return [stones, deposits, grass, ferns, shrubs].every(count => count > 0);
   }), { timeout: 30000 }).toBe(true);
   const directory = join(process.cwd(), 'art-review', 'batch-005d-a2', 'ground');
   await mkdir(directory, { recursive: true });

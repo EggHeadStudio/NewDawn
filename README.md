@@ -48,6 +48,8 @@ Open the URL printed by Vite. Node.js 20.19+ or 22.12+ is required. On systems w
 
 The production build includes an offline shell. Supported browsers may offer **Install Game**; on iOS use Safari's Share menu and **Add to Home Screen**. Availability varies by browser. Fullscreen is attempted after a play action and can be exited from pause settings; unsupported browsers remain in their normal viewport.
 
+The menu uses the creator-supplied NEWDAWN logo. Browser favicons, the iOS home-screen image and separate standard/maskable PWA icons use the matching ND artwork and are available offline. An already installed app's icon may require reopening or reinstalling the shortcut, depending on the browser and operating system.
+
 An available update prompts **Update Now** or **Later**. Updating saves an active game before switching versions and restores it after reload; a failed save cancels the update. Keep browser storage enabled. Installation and device behavior have not been verified on physical phones.
 
 ## Validation

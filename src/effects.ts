@@ -113,6 +113,7 @@ export class Precipitation {
   private readonly points: THREE.Points;
   private readonly positions = new Float32Array(150 * 3);
   private readonly visibility = new Float32Array(150).fill(1);
+  private readonly snow = { value: 0 };
   private weather: Weather = 'Clear';
 
   constructor(scene: THREE.Scene) {
@@ -126,10 +127,11 @@ export class Precipitation {
     geometry.setAttribute('particleVisibility', new THREE.BufferAttribute(this.visibility, 1));
     const material = new THREE.PointsMaterial({ color: '#e2eff1', size: 0.09, transparent: true, opacity: 0.8, depthWrite: false });
     material.onBeforeCompile = shader => {
+      shader.uniforms.weatherSnow = this.snow;
       shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\nattribute float particleVisibility;\nvarying float weatherVisibility;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\nweatherVisibility = particleVisibility;');
-      shader.fragmentShader = shader.fragmentShader.replace('#include <common>', '#include <common>\nvarying float weatherVisibility;')
-        .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\nif (weatherVisibility < 0.5) discard;');
+      shader.fragmentShader = shader.fragmentShader.replace('#include <common>', '#include <common>\nvarying float weatherVisibility;\nuniform float weatherSnow;')
+        .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\nif (weatherVisibility < 0.5) discard;\nif (weatherSnow > 0.5) diffuseColor.a *= 1.0 - smoothstep(0.3, 0.5, length(gl_PointCoord - 0.5));');
     };
     this.points = new THREE.Points(geometry, material);
     this.points.frustumCulled = false;
@@ -140,6 +142,7 @@ export class Precipitation {
   update(weather: Weather, focus: THREE.Vector3, dt: number, shelter?: ShelterIndex) {
     if (weather !== this.weather) {
       this.weather = weather;
+      this.snow.value = weather === 'Snow' ? 1 : 0;
       const material = this.points.material as THREE.PointsMaterial;
       material.size = weather === 'Snow' ? 0.16 : 0.09;
     }

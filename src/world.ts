@@ -3,20 +3,34 @@ import {
   CHUNK_SIZE, PLANET_HEIGHT, PLANET_WIDTH, nearestPlanetPosition, planetCoordinates, planetDistanceMeters, planetHeight, PlanetTangentFrame,
 } from './planet';
 import { depositKinds, requiresPickaxe, type DepositKind } from './economy';
-import { FoliageClearance, obstructingTreeMeshes } from './tree-occlusion';
+import { TreeClearance, obstructingTreeMeshes } from './tree-occlusion';
 import { climateZone } from './geography';
 import { createTerrainMaterial, TerrainTextures } from './terrain-material';
 import { NatureAssets, type NatureTreeVariant } from './nature-assets';
 import { GroundNatureAssets, type GroundAssetKind } from './ground-nature-assets';
 import { computeFullCoverBounds, coverCount, treeDetail, type TreeDetail, type VegetationQuality } from './vegetation-lod';
+import type { StructuralPiece } from './construction';
+
+/** Share of non-adult firs and spruces drawn as full young whorled firs rather than sparse saplings. */
+const YOUNG_FIR_SHARE = 0.5;
 
 export type Biome = 'ocean' | 'beach' | 'grass' | 'forest' | 'rock' | 'desert' | 'snow';
 export type VegetationFamily = 'none' | 'deciduous' | 'conifer' | 'cactus';
-export type TreeSpecies = 'pine' | 'spruce' | 'birch' | 'oak' | 'maple' | 'palm' | 'acacia' | 'tropical';
+export type TreeSpecies = 'pine' | 'spruce' | 'fir' | 'birch' | 'oak' | 'maple' | 'palm' | 'acacia' | 'tropical';
 type Season = 'Spring' | 'Summer' | 'Autumn' | 'Winter';
+
+/** Deterministic visual age class; it never alters resources or saves. */
+export function treeAgeClass(species: TreeSpecies, seedX: number, seedZ: number, seed: number): 'mature' | 'young' | 'default' {
+  const firLike = species === 'fir' || species === 'spruce';
+  if ((species === 'oak' && seededNoise(seedX, seedZ, seed + 791) < 0.12)
+    || (species === 'pine' && seededNoise(seedX, seedZ, seed + 792) < 0.16)
+    || (firLike && seededNoise(seedX, seedZ, seed + 793) < 0.32)) return 'mature';
+  return firLike && seededNoise(seedX, seedZ, seed + 794) < YOUNG_FIR_SHARE ? 'young' : 'default';
+}
 type Resource = 'wood' | 'stone' | 'food';
 type Chunk = { x: number; z: number; objects: THREE.Object3D[]; terrain: THREE.Mesh; water: THREE.Mesh;
-  terrainCoordinates: Float32Array; coverCoordinates: Map<THREE.InstancedMesh, Float32Array>; baseColors: Float32Array };
+  terrainCoordinates: Float32Array; coverCoordinates: Map<THREE.InstancedMesh, Float32Array>;
+  hiddenCover: Map<THREE.InstancedMesh, Map<number, number[]>>; baseColors: Float32Array };
 
 export function seededNoise(x: number, z: number, seed: number) {
   const n = Math.sin(x * 127.1 + z * 311.7 + seed * 74.7) * 43758.5453;
@@ -67,7 +81,7 @@ export function treeSpeciesAt(x: number, z: number, seed: number, family: 'decid
   const point = planetCoordinates(x, z);
   const latitude = Math.abs(point.z / PLANET_HEIGHT * 180);
   const variation = seededNoise(point.x, point.z, seed + 311);
-  if (family === 'conifer') return variation < 0.5 ? 'pine' : 'spruce';
+  if (family === 'conifer') return variation < 0.5 ? 'pine' : variation < 0.75 ? 'spruce' : 'fir';
   if (latitude < 23.5 && Math.max(Math.abs(point.x), Math.abs(point.z)) > 72) {
     return variation < 0.3 ? 'palm' : variation < 0.55 ? 'acacia' : 'tropical';
   }
@@ -107,7 +121,48 @@ function disposeObject(object: THREE.Object3D) {
     if (!child.userData.natureSharedGeometry) child.geometry.dispose();
     const materials = Array.isArray(child.material) ? child.material : [child.material];
     if (!child.userData.natureSharedMaterial) materials.forEach(material => material.dispose());
+    child.customDepthMaterial?.dispose();
   });
+}
+
+function wildflowerGeometry() {
+  const vertices: number[] = [];
+  const colors: number[] = [];
+  const petal = new THREE.Color('#eee9d5');
+  const center = new THREE.Color('#c4a44b');
+  const stem = new THREE.Color('#647a43');
+  const leaf = new THREE.Color('#6d814b');
+  const triangle = (a: number[], b: number[], c: number[], color: THREE.Color) => {
+    for (const point of [a, b, c]) {
+      vertices.push(...point);
+      colors.push(color.r, color.g, color.b);
+    }
+  };
+  for (const [cx, cz, height, size] of [[0, 0, 0.13, 1], [0.055, 0.025, 0.06, 0.8], [-0.045, -0.035, 0.035, 0.72]]) {
+    for (let i = 0; i < 8; i++) {
+      const angle = i * Math.PI * 2 / 8;
+      const radial = (r: number, t: number, y: number) =>
+        [cx + (Math.cos(angle) * r - Math.sin(angle) * t) * size, y,
+          cz + (Math.sin(angle) * r + Math.cos(angle) * t) * size];
+      const base = radial(0.008, 0, height);
+      const left = radial(0.027, 0.009, height + 0.002);
+      const right = radial(0.027, -0.009, height + 0.002);
+      const tip = radial(0.038, 0, height - 0.002);
+      triangle(base, left, tip, petal);
+      triangle(base, tip, right, petal);
+      triangle([cx, height + 0.004, cz], radial(0.009, 0, height + 0.003),
+        radial(0.009 * Math.cos(Math.PI / 4), 0.009 * Math.sin(Math.PI / 4), height + 0.003), center);
+    }
+    triangle([-0.008, -0.13, 0], [0.008, -0.13, 0], [cx, height, cz], stem);
+    triangle([0, -0.13, -0.008], [0, -0.13, 0.008], [cx, height, cz], stem);
+  }
+  triangle([0, -0.04, 0], [0.06, -0.02, 0], [0, 0.02, 0], leaf);
+  triangle([0, -0.06, 0], [0, -0.03, -0.06], [0, 0.015, 0], leaf);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geometry.computeVertexNormals();
+  return geometry;
 }
 
 function coordinateKey(x: number, z: number) {
@@ -134,6 +189,7 @@ export class World {
   private readonly groundAssets: GroundNatureAssets | null;
   private radius: number;
   private vegetationQuality: VegetationQuality = 'medium';
+  private coverFloorBuckets = new Map<string, Array<Pick<StructuralPiece, 'x' | 'z' | 'y'>>>();
   private treeFocus = { x: 0, z: 0 };
   private lastTreeDetailFocus: { x: number; z: number } | null = null;
   readonly size = CHUNK_SIZE;
@@ -173,6 +229,14 @@ export class World {
 
   get loadedChunkCount() { return this.chunks.size; }
   get terrainReady() { return this.terrainTextures?.ready ?? false; }
+
+  get hiddenFloorCoverCount() {
+    let count = 0;
+    for (const chunk of this.chunks.values()) {
+      for (const hidden of chunk.hiddenCover.values()) count += hidden.size;
+    }
+    return count;
+  }
 
   vegetationStats() {
     let near = 0;
@@ -407,11 +471,12 @@ export class World {
     water.name = 'water';
     water.receiveShadow = true;
     const chunk: Chunk = { x: cx, z: cz, objects: [terrain, water], terrain, water, terrainCoordinates,
-      coverCoordinates: new Map(), baseColors: new Float32Array(colors) };
+      coverCoordinates: new Map(), hiddenCover: new Map(), baseColors: new Float32Array(colors) };
     this.chunks.set(`${cx},${cz}`, chunk);
     this.addNature(chunk);
     this.addDeposits(chunk);
     this.addGroundCover(chunk);
+    this.updateFloorCover(chunk);
     if (this.tangentFrame) this.projectChunk(chunk);
     chunk.objects.forEach(object => this.group.add(object));
     this.colorChunk(chunk);
@@ -612,11 +677,13 @@ export class World {
         if (y < 0.5 || biome === 'rock' || biome === 'ocean' || biome === 'desert'
           || n < (biome === 'grass' ? 0.5 : 0.58)) continue;
         transform.position.set(px - x0, y + 0.13, pz - z0);
-        transform.rotation.set(0, n * Math.PI * 2, (n - 0.5) * 0.25);
+        const rotation = n > 0.97 ? seededNoise(point.x, point.z, this.seed + 199) : n;
+        transform.rotation.set(0, rotation * Math.PI * 2, (n - 0.5) * 0.25);
         transform.scale.setScalar(0.7 + n * 0.7);
         transform.updateMatrix();
         (n > 0.97 ? flowers : biome === 'forest' && n > 0.92 ? ferns : grass).push(transform.matrix.clone());
       }
+
     }
     const addCover = (matrices: THREE.Matrix4[], geometry: THREE.BufferGeometry, color: string, kind: 'grass' | 'flower' | 'fern') => {
       if (kind !== 'flower') {
@@ -628,6 +695,10 @@ export class World {
         matrices.splice(0, matrices.length, ...ranked.map(item => item.matrix));
       }
       const mesh = new THREE.InstancedMesh(geometry, new THREE.MeshStandardMaterial({ color, roughness: 1 }), matrices.length);
+      if (kind === 'flower') {
+        mesh.material.vertexColors = true;
+        mesh.material.side = THREE.DoubleSide;
+      }
       mesh.position.set(x0, 0, z0);
       mesh.userData.groundCover = kind;
       const coordinates = new Float32Array(matrices.length * 2);
@@ -643,8 +714,80 @@ export class World {
       if (kind !== 'flower') this.installGroundVisual(mesh, kind);
     };
     addCover(grass, new THREE.ConeGeometry(0.11, 0.35, 3), '#7aa85d', 'grass');
-    addCover(flowers, new THREE.IcosahedronGeometry(0.12, 0), '#ecd9a4', 'flower');
+    addCover(flowers, wildflowerGeometry(), '#ffffff', 'flower');
     addCover(ferns, new THREE.ConeGeometry(0.11, 0.35, 3), '#7aa85d', 'fern');
+  }
+
+  setFloorCover(pieces: readonly StructuralPiece[]) {
+    this.coverFloorBuckets.clear();
+    const bucket = (x: number, z: number) => {
+      const wrap = (value: number, period: number) => ((value % period) + period) % period;
+      return `${wrap(Math.floor(x / CHUNK_SIZE), PLANET_WIDTH / CHUNK_SIZE)},${wrap(Math.floor(z / CHUNK_SIZE), PLANET_HEIGHT * 2 / CHUNK_SIZE)}`;
+    };
+    for (const piece of pieces) {
+      if (piece.kind !== 'floor') continue;
+      const canonical = planetCoordinates(piece.x, piece.z);
+      for (const point of [canonical, { x: canonical.x - PLANET_WIDTH / 2, z: PLANET_HEIGHT - canonical.z }]) {
+        const key = bucket(point.x, point.z);
+        const floors = this.coverFloorBuckets.get(key) ?? [];
+        floors.push({ x: point.x, z: point.z, y: piece.y });
+        this.coverFloorBuckets.set(key, floors);
+      }
+    }
+    for (const chunk of this.chunks.values()) this.updateFloorCover(chunk);
+  }
+
+  private updateFloorCover(chunk: Chunk) {
+    const x0 = chunk.x * CHUNK_SIZE, z0 = chunk.z * CHUNK_SIZE;
+    const wrap = (value: number, period: number) => ((value % period) + period) % period;
+    const floors = new Map<string, Array<Pick<StructuralPiece, 'x' | 'z' | 'y'>>>();
+    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+      const key = `${wrap(chunk.x + dx, PLANET_WIDTH / CHUNK_SIZE)},${wrap(chunk.z + dz, PLANET_HEIGHT * 2 / CHUNK_SIZE)}`;
+      for (const floor of this.coverFloorBuckets.get(key) ?? []) {
+        const x = floor.x + Math.round((x0 + CHUNK_SIZE / 2 - floor.x) / PLANET_WIDTH) * PLANET_WIDTH;
+        const z = floor.z + Math.round((z0 + CHUNK_SIZE / 2 - floor.z) / (PLANET_HEIGHT * 2)) * PLANET_HEIGHT * 2;
+        if (x < x0 - 1 || x > x0 + CHUNK_SIZE + 1 || z < z0 - 1 || z > z0 + CHUNK_SIZE + 1) continue;
+        const slot = `${x},${z}`;
+        const list = floors.get(slot) ?? [];
+        list.push({ x, z, y: floor.y });
+        floors.set(slot, list);
+      }
+    }
+    const matrix = new THREE.Matrix4();
+    const basis = [0, 1, 2, 4, 5, 6, 8, 9, 10];
+    for (const [mesh, coordinates] of chunk.coverCoordinates) {
+      let hidden = chunk.hiddenCover.get(mesh);
+      if (!hidden && !floors.size) continue;
+      if (!hidden) { hidden = new Map(); chunk.hiddenCover.set(mesh, hidden); }
+      let changed = false;
+      for (let i = 0; i < coordinates.length / 2; i++) {
+        const x = x0 + coordinates[i * 2], z = z0 + coordinates[i * 2 + 1];
+        mesh.getMatrixAt(i, matrix);
+        const ground = matrix.elements[13] - 0.13;
+        const centerX = Math.round(x / 2) * 2, centerZ = Math.round(z / 2) * 2;
+        const xs = Math.abs(x - centerX) === 1 ? [centerX, centerX - 2] : [centerX];
+        const zs = Math.abs(z - centerZ) === 1 ? [centerZ, centerZ - 2] : [centerZ];
+        const covered = xs.some(fx => zs.some(fz => (floors.get(`${fx},${fz}`) ?? []).some(floor =>
+            Math.abs(floor.x - x) <= 1 && Math.abs(floor.z - z) <= 1
+            && ground <= floor.y + 0.18 && ground >= floor.y - 0.85)));
+        const old = hidden.get(i);
+        if (covered === Boolean(old)) continue;
+        if (covered) {
+          hidden.set(i, basis.map(index => matrix.elements[index]));
+          for (const index of basis) matrix.elements[index] *= 0.00001;
+        } else {
+          basis.forEach((index, element) => { matrix.elements[index] = old![element]; });
+          hidden.delete(i);
+        }
+        mesh.setMatrixAt(i, matrix);
+        changed = true;
+      }
+      if (changed) {
+        mesh.instanceMatrix.needsUpdate = true;
+        computeFullCoverBounds(mesh);
+      }
+      if (!hidden.size) chunk.hiddenCover.delete(mesh);
+    }
   }
 
   private installGroundVisual(object: THREE.Object3D, kind: GroundAssetKind) {
@@ -788,8 +931,8 @@ export class World {
       const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
       for (const material of materials) {
         if (!(material instanceof THREE.MeshStandardMaterial)) continue;
-        const clearance: unknown = material.userData.foliageClearance;
-        if (clearance instanceof FoliageClearance) {
+        const clearance: unknown = material.userData.treeClearance;
+        if (clearance instanceof TreeClearance) {
           clearance.camera.value.copy(worldCamera);
           clearance.target.value.copy(worldTarget);
           clearance.amount.value = restored ? 0 : (1 - next) / 0.82;
@@ -821,8 +964,9 @@ export class World {
     root.userData.vegetationFamily = family;
     const species = treeSpeciesAt(seedX, seedZ, this.seed, family);
     root.userData.treeSpecies = species;
-    root.userData.natureMature = (species === 'oak' && seededNoise(seedX, seedZ, this.seed + 791) < 0.12)
-      || (species === 'pine' && seededNoise(seedX, seedZ, this.seed + 792) < 0.16);
+    const age = treeAgeClass(species, seedX, seedZ, this.seed);
+    root.userData.natureMature = age === 'mature';
+    root.userData.natureYoung = age === 'young';
     root.rotation.y = seededNoise(seedX, seedZ, this.seed + 481) * Math.PI * 2;
     const height = species === 'palm' ? 2.8 : species === 'birch' ? 2.5
       : species === 'pine' ? 2.35 : species === 'acacia' ? 2.1 : 1.8;
@@ -839,7 +983,7 @@ export class World {
       root.add(mesh);
       return mesh;
     };
-    if (species === 'pine' || species === 'spruce') {
+    if (species === 'pine' || species === 'spruce' || species === 'fir') {
       const pine = species === 'pine';
       for (let i = 0; i < 3; i++) {
         const crown = foliage(new THREE.ConeGeometry((pine ? 0.65 : 0.95) - i * 0.13, pine ? 1.4 : 1.25, 7),
@@ -881,12 +1025,14 @@ export class World {
     if (family !== 'deciduous' && family !== 'conifer') return;
     if (family === 'deciduous' && !['birch', 'oak', 'maple'].includes(root.userData.treeSpecies)) return;
     const desired: NatureTreeVariant = root.userData.natureMature
-      ? root.userData.treeSpecies === 'pine' ? 'mature-pine' : 'mature'
-      : root.userData.treeSpecies === 'pine' ? 'pine' : 'default';
+      ? root.userData.treeSpecies === 'pine' ? 'mature-pine'
+        : root.userData.treeSpecies === 'fir' || root.userData.treeSpecies === 'spruce' ? 'mature-fir' : 'mature'
+      : root.userData.treeSpecies === 'pine' ? 'pine' : root.userData.natureYoung ? 'young-fir' : 'default';
     if (root.userData.natureVariant === desired) return;
     let variant = desired;
     let visual = this.natureAssets?.create(family, root.rotation.y, desired);
-    if (!visual && (desired === 'mature' || desired === 'mature-pine') && !root.userData.natureAuthored) {
+    if (!visual && (desired === 'mature' || desired === 'mature-pine' || desired === 'mature-fir' || desired === 'young-fir')
+      && !root.userData.natureAuthored) {
       variant = desired === 'mature-pine' ? 'pine' : 'default';
       visual = this.natureAssets?.create(family, root.rotation.y, variant);
     }
@@ -1052,6 +1198,7 @@ export class World {
           computeFullCoverBounds(object);
         }
       }
+      this.updateFloorCover(chunk);
     }
   }
 

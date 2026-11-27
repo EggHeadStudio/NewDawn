@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { biomeAt, safeSpawn, seededNoise, terrainHeight, terrainPalette, treeSpeciesAt, vegetationFamilyAt, World } from './world';
+import { biomeAt, safeSpawn, seededNoise, terrainHeight, terrainPalette, treeAgeClass, treeSpeciesAt, vegetationFamilyAt, World } from './world';
 import {
   CHUNK_SIZE, PLANET_HEIGHT, PLANET_WIDTH, geographicToPlanetPosition, nearestPlanetPosition,
   planetCoordinates, planetDistanceMeters, planetPositionToGeographic, PlanetTangentFrame,
@@ -21,9 +21,41 @@ describe('procedural world', () => {
       species.add(treeSpeciesAt(x + 1000, 0, 1847, 'deciduous'));
       species.add(treeSpeciesAt(x, PLANET_HEIGHT * 0.3, 1847, 'conifer'));
     }
-    expect([...species].sort()).toEqual(['acacia', 'birch', 'maple', 'oak', 'palm', 'pine', 'spruce', 'tropical']);
+    expect([...species].sort()).toEqual(['acacia', 'birch', 'fir', 'maple', 'oak', 'palm', 'pine', 'spruce', 'tropical']);
     expect(treeSpeciesAt(1000 + PLANET_WIDTH, 0, 1847, 'deciduous'))
       .toBe(treeSpeciesAt(1000, 0, 1847, 'deciduous'));
+  });
+
+  it('adds firs without reclassifying existing pine locations', () => {
+    let firs = 0;
+    for (let x = 0; x < 200; x++) {
+      const point = planetCoordinates(x, PLANET_HEIGHT * 0.3);
+      const previousPine = seededNoise(point.x, point.z, 1847 + 311) < 0.5;
+      const species = treeSpeciesAt(x, PLANET_HEIGHT * 0.3, 1847, 'conifer');
+      expect(species === 'pine').toBe(previousPine);
+      if (species === 'fir') firs++;
+    }
+    expect(firs).toBeGreaterThan(0);
+  });
+
+  it('draws spruce and fir stands in mature, young and sapling age classes without changing pine', () => {
+    const counts: Record<string, Record<string, number>> = { fir: {}, spruce: {}, pine: {} };
+    for (let i = 0; i < 2000; i++) {
+      for (const species of ['fir', 'spruce', 'pine'] as const) {
+        const age = treeAgeClass(species, i * 3.7, i * 1.3, 1847);
+        expect(treeAgeClass(species, i * 3.7, i * 1.3, 1847)).toBe(age);
+        counts[species][age] = (counts[species][age] ?? 0) + 1;
+      }
+    }
+    for (const species of ['fir', 'spruce']) {
+      expect(counts[species].mature / 2000).toBeGreaterThan(0.25);
+      expect(counts[species].mature / 2000).toBeLessThan(0.39);
+      expect(counts[species].young / 2000).toBeGreaterThan(0.28);
+      expect(counts[species].young / 2000).toBeLessThan(0.41);
+      expect(counts[species].default).toBeGreaterThan(0);
+    }
+    expect(counts.pine.young).toBeUndefined();
+    expect(counts.pine.mature / 2000).toBeLessThan(0.22);
   });
   it('supports bounded terrain edits and undo', () => {
     const world = new World(1847, 1);
@@ -33,6 +65,130 @@ describe('procedural world', () => {
     expect(world.heightAt(0, 0)).toBeGreaterThan(before);
     world.undoTerrain(changes);
     expect(world.heightAt(0, 0)).toBeCloseTo(before, 4);
+  });
+
+  it('keeps wildflower clusters varied and restores their transforms after masking and streaming', () => {
+    const world = new World(1847, 1);
+    const flowers = () => world.group.children.find((object): object is THREE.InstancedMesh =>
+      object instanceof THREE.InstancedMesh && object.userData.groundCover === 'flower' && object.count >= 2)!;
+    const mesh = flowers();
+    const color = mesh.geometry.getAttribute('color');
+    expect(color).toBeDefined();
+    expect(new Set(Array.from({ length: color.count }, (_, i) =>
+      `${color.getX(i)},${color.getY(i)},${color.getZ(i)}`)).size).toBeGreaterThan(1);
+    const original = new THREE.Matrix4();
+    const another = new THREE.Matrix4();
+    mesh.getMatrixAt(0, original);
+    mesh.getMatrixAt(1, another);
+    const firstDirection = new THREE.Vector3().setFromMatrixColumn(original, 0).normalize();
+    const directions = Array.from({ length: mesh.count }, (_, index) => {
+      mesh.getMatrixAt(index, another);
+      return new THREE.Vector3().setFromMatrixColumn(another, 0).normalize();
+    });
+    expect(Math.max(...directions.map(direction => firstDirection.distanceTo(direction)))).toBeGreaterThan(1);
+    const x = mesh.position.x + original.elements[12], z = mesh.position.z + original.elements[14];
+    const floor = { id: 'floor', kind: 'floor' as const, x: Math.round(x / 2) * 2, z: Math.round(z / 2) * 2,
+      y: world.heightAt(x, z), level: 0, rotation: 0 as const, open: false };
+    world.setFloorCover([floor]);
+    mesh.getMatrixAt(0, another);
+    expect(new THREE.Vector3().setFromMatrixColumn(another, 0).length()).toBeLessThan(0.00002);
+    world.setFloorCover([]);
+    mesh.getMatrixAt(0, another);
+    expect(another.elements).toEqual(original.elements);
+    const chunkPosition = mesh.position.clone();
+    world.updateChunks(150, 150, true);
+    world.updateChunks(0, 0, true);
+    const reloaded = world.group.children.find((object): object is THREE.InstancedMesh =>
+      object instanceof THREE.InstancedMesh && object.userData.groundCover === 'flower'
+      && object.position.equals(chunkPosition))!;
+    expect(reloaded).toBeDefined();
+    reloaded.getMatrixAt(0, another);
+    expect(another.elements).toEqual(original.elements);
+    world.dispose();
+  });
+
+  it('hides floor-level decorative cover and restores it after removal and streaming', () => {
+    const world = new World(1847, 1);
+    const meshes = () => world.group.children.filter((object): object is THREE.InstancedMesh =>
+      object instanceof THREE.InstancedMesh && Boolean(object.userData.groundCover));
+    const matrix = new THREE.Matrix4();
+    const mesh = meshes().find(object => object.count > 0)!;
+    mesh.getMatrixAt(0, matrix);
+    const original = matrix.clone();
+    const x = mesh.position.x + matrix.elements[12], z = mesh.position.z + matrix.elements[14];
+    const floor = { id: 'floor', kind: 'floor' as const, x: Math.round(x / 2) * 2, z: Math.round(z / 2) * 2,
+      y: world.heightAt(x, z), level: 0, rotation: 0 as const, open: false };
+    const distant = meshes().find(object => object.count > 0 && Math.hypot(object.position.x - x, object.position.z - z) > 24)!;
+    distant.getMatrixAt(0, matrix);
+    const distantOriginal = matrix.clone();
+    const resourceCount = world.group.children.filter(object => object.userData.resource || object.userData.depositId).length;
+    world.setFloorCover([{ ...floor, y: floor.y + 2.4, level: 1 }]);
+    mesh.getMatrixAt(0, matrix);
+    expect(matrix.elements[0]).toBeCloseTo(original.elements[0]);
+    world.setFloorCover([floor]);
+    mesh.getMatrixAt(0, matrix);
+    expect(new THREE.Vector3().setFromMatrixColumn(matrix, 0).length()).toBeLessThan(0.00002);
+    distant.getMatrixAt(0, matrix);
+    expect(matrix.elements).toEqual(distantOriginal.elements);
+    expect(world.group.children.filter(object => object.userData.resource || object.userData.depositId)).toHaveLength(resourceCount);
+    const terrainChanges = world.editTerrain(x, z, 4, 'flatten', floor.y + 1);
+    mesh.getMatrixAt(0, matrix);
+    expect(matrix.elements[0]).toBeCloseTo(original.elements[0]);
+    world.undoTerrain(terrainChanges);
+    mesh.getMatrixAt(0, matrix);
+    expect(new THREE.Vector3().setFromMatrixColumn(matrix, 0).length()).toBeLessThan(0.00002);
+    world.setFloorCover([]);
+    mesh.getMatrixAt(0, matrix);
+    expect(matrix.elements).toEqual(original.elements);
+    world.setFloorCover([floor]);
+    world.updateChunks(x + 150, z + 150, true);
+    world.updateChunks(x, z, true);
+    const reloaded = meshes().find(object => object.userData.groundCover === mesh.userData.groundCover
+      && object.position.x === mesh.position.x && object.position.z === mesh.position.z)!;
+    expect(reloaded).toBeDefined();
+    reloaded.getMatrixAt(0, matrix);
+    expect(new THREE.Vector3().setFromMatrixColumn(matrix, 0).length()).toBeLessThan(0.00002);
+    world.setFloorCover([]);
+    reloaded.getMatrixAt(0, matrix);
+    expect(matrix.elements).toEqual(original.elements);
+    world.dispose();
+  });
+
+  it('applies floor cover masking in reflected polar and wrapped longitude copies', () => {
+    const world = new World(500, 1);
+    const matrix = new THREE.Matrix4();
+    for (const sign of [-1, 1]) {
+      const z = sign * (PLANET_HEIGHT / 2 - 12);
+      world.updateChunks(12, z, true);
+      const mesh = world.group.children.find((object): object is THREE.InstancedMesh =>
+        object instanceof THREE.InstancedMesh && Boolean(object.userData.groundCover) && object.count > 0)!;
+      expect(mesh).toBeDefined();
+      mesh.getMatrixAt(0, matrix);
+      const x = mesh.position.x + matrix.elements[12], groundZ = mesh.position.z + matrix.elements[14];
+      const floor = { id: 'floor', kind: 'floor' as const, x: Math.round(x / 2) * 2, z: Math.round(groundZ / 2) * 2,
+        y: matrix.elements[13] - 0.13, level: 0, rotation: 0 as const, open: false };
+      world.setFloorCover([floor]);
+      mesh.getMatrixAt(0, matrix);
+      expect(new THREE.Vector3().setFromMatrixColumn(matrix, 0).length()).toBeLessThan(0.00002);
+      for (const copy of [{ x: x + PLANET_WIDTH, z: groundZ },
+        { x: x - PLANET_WIDTH / 2, z: sign * PLANET_HEIGHT - groundZ }]) {
+        world.updateChunks(copy.x, copy.z, true);
+        const found = world.group.children.some(object => {
+          if (!(object instanceof THREE.InstancedMesh) || object.userData.groundCover !== mesh.userData.groundCover) return false;
+          for (let i = 0; i < object.count; i++) {
+            object.getMatrixAt(i, matrix);
+            if (Math.hypot(object.position.x + matrix.elements[12] - copy.x,
+              object.position.z + matrix.elements[14] - copy.z) < 0.001) {
+              return new THREE.Vector3().setFromMatrixColumn(matrix, 0).length() < 0.00002;
+            }
+          }
+          return false;
+        });
+        expect(found).toBe(true);
+      }
+      world.setFloorCover([]);
+    }
+    world.dispose();
   });
 
   it('updates terrain material weights when terrain is edited and seasons change', () => {
@@ -519,6 +675,22 @@ describe('procedural world', () => {
     }
     expect(rebasedHeight).toBeCloseTo(world.heightAt(x + 4 - PLANET_WIDTH, z + 4), 5);
     world.dispose();
+  });
+
+  it('disposes per-tree shadow materials when resource chunks unload', () => {
+    const world = new World(1847, 1);
+    const tree = world.group.children.find(object => object.userData.resource === 'wood')!;
+    let mesh: THREE.Mesh | undefined;
+    tree.traverse(object => { if (!mesh && object instanceof THREE.Mesh) mesh = object; });
+    expect(mesh).toBeDefined();
+    const shadow = new THREE.MeshDepthMaterial();
+    mesh!.customDepthMaterial = shadow;
+    let disposals = 0;
+    shadow.addEventListener('dispose', () => disposals++);
+    world.updateChunks(1000, 1000, true);
+    expect(disposals).toBe(1);
+    world.dispose();
+    expect(disposals).toBe(1);
   });
 
   it('unloads and regenerates chunks while retaining excavations and depleted resources', () => {

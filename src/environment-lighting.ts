@@ -16,6 +16,8 @@ export function atmosphericFogRange(start: number, end: number, renderDistance: 
   return { near: Math.min(start * far / Math.max(end, 0.001), Math.max(0, far - 8)), far };
 }
 
+export const STARLIGHT_FILL = 0.9;
+
 export function environmentLighting(minutes: number, weather: Weather, height?: number) {
   const solarHeight = height ?? Math.sin((minutes - 360) / 720 * Math.PI);
   const daylight = smoothstep(-0.18, 0.22, solarHeight);
@@ -25,12 +27,21 @@ export function environmentLighting(minutes: number, weather: Weather, height?: 
     : weather === 'Rain' ? 0.64 : weather === 'Snow' ? 0.78 : 1;
   const moon = weather === 'Storm' ? 0.42 : weather === 'Cloudy' ? 0.6
     : weather === 'Rain' ? 0.65 : weather === 'Snow' ? 1.15 : 1;
+  // Artistic airglow and dark adaptation preserve some visibility under cloud.
+  const sky = weather === 'Storm' ? 0.75 : weather === 'Cloudy' ? 0.85
+    : weather === 'Rain' ? 0.8 : weather === 'Snow' ? 1.1 : 1;
   return {
     daylight,
     twilight,
     sunlight: sunlight * 3 * cloud,
     hemisphere: 0.55 * moon * (1 - daylight) + (0.5 + 1.45 * cloud) * daylight,
-    moonlight: 0.34 * moon * (1 - daylight),
+    moonlight: 1.35 * moon * (1 - daylight),
+    starlight: STARLIGHT_FILL * sky * (1 - daylight),
     skyBrightness: 0.045 * moon * (1 - daylight) + (0.39 + 0.31 * cloud) * daylight,
   };
+}
+
+export function moonlitSceneLighting(lighting: ReturnType<typeof environmentLighting>, illumination: number, moonHeight: number) {
+  const moonlight = lighting.moonlight * Math.max(0, Math.min(1, illumination)) * smoothstep(0, 0.08, moonHeight);
+  return { moonlight, hemisphere: lighting.hemisphere + Math.max(2 * moonlight, lighting.starlight) };
 }

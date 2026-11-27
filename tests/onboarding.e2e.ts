@@ -54,6 +54,21 @@ async function save(page: Page) {
   await expect(page.locator('#toast')).toHaveText('World saved');
 }
 
+async function delayStorage(page: Page) {
+  await page.evaluate(() => {
+    const open = indexedDB.open.bind(indexedDB);
+    indexedDB.open = (...args: Parameters<IDBFactory['open']>) => {
+      const request = open(...args);
+      if (args[0] === 'new-dawn') request.addEventListener('success', event => {
+        // A success toast must survive immediate reload even when storage opens slowly.
+        event.stopImmediatePropagation();
+        setTimeout(() => request.dispatchEvent(new Event('success')), 500);
+      }, { once: true });
+      return request;
+    };
+  });
+}
+
 test('guided introduction follows real gathering, construction and Mira interaction', async ({ page }) => {
   test.setTimeout(180000);
   const errors: string[] = [];
@@ -104,7 +119,9 @@ test('guided introduction follows real gathering, construction and Mira interact
   await expect(page.locator('#objectiveText')).toContainText('Mira');
   await page.keyboard.press('e');
   await expect(page.locator('#npcPanel')).toBeVisible();
+  await delayStorage(page);
   await page.locator('#npcRecruit').click();
+  await expect(page.locator('#toast')).toHaveText('Mira joined your settlement');
   await expect(page.locator('#objective')).toBeHidden();
   await page.reload();
   await page.locator('#continueGame').click();
@@ -122,9 +139,13 @@ test('free exploration, restart, skip and legacy saves persist', async ({ page }
   await page.locator('#introductionChoice').selectOption('free');
   await page.locator('#newGame').click();
   await expect(page.locator('#objective')).toBeHidden();
-  await page.locator('#pauseButton').click();
+  await save(page);
+  await delayStorage(page);
   await page.locator('#restartIntroduction').click();
-  await page.locator('#resumeGame').click();
+  await expect(page.locator('#toast')).toHaveText('Introduction restarted');
+  await page.reload();
+  await page.locator('#continueGame').click();
+  await expect(page.locator('#objective')).toBeVisible();
   await expect(page.locator('#objectiveText')).toContainText('Gather a resource');
   const directory = join(process.cwd(), 'art-review', 'batch-005d-a3', 'onboarding');
   await mkdir(directory, { recursive: true });
@@ -148,6 +169,7 @@ test('free exploration, restart, skip and legacy saves persist', async ({ page }
   await page.setViewportSize({ width: 844, height: 390 });
   await checkHint();
   await page.screenshot({ path: join(directory, 'mobile-guide-landscape.png') });
+  await delayStorage(page);
   await page.locator('#pauseButton').click();
   await page.locator('#skipIntroduction').click();
   await expect(page.locator('#toast')).toHaveText('Introduction skipped');

@@ -1,9 +1,30 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
-import { FoliageClearance, obstructingTreeMeshes } from './tree-occlusion';
+import { TreeClearance, obstructingTreeMeshes } from './tree-occlusion';
 import { World } from './world';
 
 describe('tree visibility', () => {
+  it.each([false, true])('includes shoulder-edge branches without clearing unrelated meshes (foliage=%s)', foliage => {
+    const world = new THREE.Group();
+    world.position.set(-10000, 0, -20000);
+    const tree = new THREE.Group();
+    tree.userData.resource = 'wood';
+    tree.position.set(10000, 0, 20002);
+    const material = new THREE.MeshStandardMaterial();
+    if (foliage) material.userData.treeClearance = new TreeClearance();
+    const branch = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.2), material);
+    branch.position.set(0.2, 1.05, 0);
+    tree.add(branch);
+    world.add(tree);
+    const camera = new THREE.Vector3(10000, 1.05, 20004);
+    const player = new THREE.Vector3(10000, 0, 20000);
+    expect(obstructingTreeMeshes(world, camera, player).has(branch)).toBe(true);
+    branch.position.x = 1.2;
+    expect(obstructingTreeMeshes(world, camera, player).has(branch)).toBe(false);
+    branch.position.set(0.2, 1.05, -4);
+    expect(obstructingTreeMeshes(world, camera, player).has(branch)).toBe(false);
+  });
+
   it('finds trees covering the body rather than only the head-to-camera ray', () => {
     const world = new THREE.Group();
     const tree = new THREE.Group();
@@ -50,7 +71,34 @@ describe('tree visibility', () => {
     expect(obstructingTreeMeshes(world, new THREE.Vector3(0, 1, 4), new THREE.Vector3()).has(foliage)).toBe(true);
   });
 
-  it('clears only a local foliage sightline and restores it without transparent materials', () => {
+  it('uses transformed foliage bounds rather than triangle raycasts, limited to the sightline', () => {
+    const world = new THREE.Group();
+    world.position.set(-10000, 0, -20000);
+    const tree = new THREE.Group();
+    tree.userData.resource = 'wood';
+    tree.position.set(10000, 0, 20002);
+    tree.rotation.y = Math.PI / 4;
+    tree.scale.setScalar(1.5);
+    const material = new THREE.MeshStandardMaterial();
+    material.userData.treeClearance = new TreeClearance();
+    const foliage = new THREE.Mesh(new THREE.BoxGeometry(1, 2, 1), material);
+    foliage.position.y = 1;
+    const raycast = vi.spyOn(foliage, 'raycast');
+    tree.add(foliage);
+    world.add(tree);
+    const camera = new THREE.Vector3(10000, 1, 20004);
+    const player = new THREE.Vector3(10000, 0, 20000);
+    expect(obstructingTreeMeshes(world, camera, player).has(foliage)).toBe(true);
+    expect(raycast).not.toHaveBeenCalled();
+    tree.position.z = 19995;
+    expect(obstructingTreeMeshes(world, camera, player).has(foliage)).toBe(false);
+    tree.position.z = 20004;
+    expect(obstructingTreeMeshes(world, camera, player).has(foliage)).toBe(true);
+    foliage.layers.set(1);
+    expect(obstructingTreeMeshes(world, camera, player).has(foliage)).toBe(false);
+  });
+
+  it('clears a local authored branch sightline and restores it without transparent materials', () => {
     const scene = new THREE.Group();
     scene.position.set(-10000, 0, -20000);
     const world = new World(1847, 1);
@@ -59,8 +107,8 @@ describe('tree visibility', () => {
     tree.userData.resource = 'wood';
     tree.position.set(10000, 0, 20002);
     const material = new THREE.MeshStandardMaterial();
-    const clearance = new FoliageClearance();
-    material.userData.foliageClearance = clearance;
+    const clearance = new TreeClearance();
+    material.userData.treeClearance = clearance;
     const foliage = new THREE.Mesh(new THREE.BoxGeometry(1, 2, 1), material);
     foliage.position.y = 1;
     tree.add(foliage);

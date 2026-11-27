@@ -36,3 +36,14 @@ export function dampAngle(from: number, to: number, rate: number, dt: number) {
 export function clampCameraDistance(distance: number) {
   return THREE.MathUtils.clamp(distance, 5, 24);
 }
+
+export function clampCameraPitch(pitch: number) {
+  return THREE.MathUtils.clamp(pitch, -1.15, 1.05);
+}
+
+export function cameraPitchView(pitch: number) {
+  const clamped = clampCameraPitch(pitch);
+  // Looking above the horizon tilts aim instead of orbiting below the terrain.
+  const orbit = Math.max(0.1, clamped);
+  return { orbit, aimSlope: Math.tan(orbit - clamped) };
+}
