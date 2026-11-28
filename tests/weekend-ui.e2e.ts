@@ -299,6 +299,9 @@ test('minimap heading follows the rover and returns to the player on exit', asyn
   const direction = { x: end.x - start.x, z: end.z - start.z };
   expect(Math.hypot(direction.x, direction.z)).toBeGreaterThan(0.25);
   await expect.poll(async () => (await minimapHeading(page, direction)).alignment).toBeGreaterThan(0.8);
+  await expect.poll(() => page.evaluate(() => Math.abs((window as Window & {
+    __newDawnState: () => { vehicle: { speed: number } }
+  }).__newDawnState().vehicle.speed))).toBeLessThanOrEqual(0.3);
   await page.keyboard.press('e');
   await expect(page.locator('#vehicleIndicator')).toBeHidden();
   await expect.poll(async () => (await minimapHeading(page)).alignment).toBeGreaterThan(0.8);

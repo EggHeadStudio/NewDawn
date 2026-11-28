@@ -147,7 +147,7 @@ function loadHead(feminine: boolean) {
 }
 
 export function attachAuthoredCharacter(root: THREE.Group, appearance: CharacterAppearance, onError: (error: unknown) => void,
-  options: { backpack?: boolean; onBackpackError?: (error: unknown) => void } = {}) {
+  options: { backpack?: boolean; highBun?: boolean; onBackpackError?: (error: unknown) => void } = {}) {
   const avatar: Avatar = { disposed: false, mixers: [], actions: new Map(), materials: new Set(), skeletons: new Set(),
     tools: new Map(), backpackVisible: true, sawTime: 0 };
   root.userData.authoredAvatar = avatar;
@@ -204,6 +204,16 @@ export function attachAuthoredCharacter(root: THREE.Group, appearance: Character
       if (index === 1) {
         const hand = model.getObjectByName('hand_r');
         if (!hand) throw new Error('Character outfit is missing the right hand bone');
+        if (options.highBun) {
+          const head = model.getObjectByName('Head');
+          if (!head) throw new Error('Character outfit is missing the head bone');
+          model.updateMatrixWorld(true);
+          const bun = createHighBun();
+          bun.position.copy(head.worldToLocal(model.localToWorld(new THREE.Vector3(0, 1.79, -0.08))));
+          bun.quaternion.copy(head.getWorldQuaternion(new THREE.Quaternion()).invert()
+            .multiply(model.getWorldQuaternion(new THREE.Quaternion())));
+          head.add(bun);
+        }
         if (options.backpack) {
           const back = model.getObjectByName('spine_02');
           const reportError = options.onBackpackError ?? (error => console.error('Could not load backpack art', error));
@@ -262,6 +272,17 @@ export function attachAuthoredCharacter(root: THREE.Group, appearance: Character
       onError(error);
     }
   });
+}
+
+export function createHighBun() {
+  const bun = new THREE.Group();
+  bun.name = 'taru-high-bun';
+  const hair = new THREE.MeshStandardMaterial({ color: '#563a2c', roughness: 0.9 });
+  const main = new THREE.Mesh(new THREE.SphereGeometry(0.075, 16, 10), hair);
+  main.scale.set(1, 0.85, 0.85);
+  main.castShadow = true;
+  bun.add(main);
+  return bun;
 }
 
 export function setAuthoredBackpackVisible(root: THREE.Group, visible: boolean) {

@@ -22,6 +22,10 @@ export type RoverDriveState = { speedMps: number; steerYawRad: number };
 export type RoverDriveInput = { throttle: number; steer: number };
 export type RoverDriveProposal = RoverDriveState & { turnRad: number; signedMeters: number };
 
+export function canExitRover(speedMps: number): boolean {
+  return Number.isFinite(speedMps) && Math.abs(speedMps) <= 0.3;
+}
+
 export interface RoverVisualFrame {
   pose: RoverPose;
   /** Absolute support heights in the same projected frame as pose. */

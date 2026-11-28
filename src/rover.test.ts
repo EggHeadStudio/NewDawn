@@ -4,7 +4,7 @@ import { createVehicle } from './assets';
 import { geographicToPlanetPosition } from './planet';
 import { World } from './world';
 import {
-  commitRoverDrive, createRoverVisual, getRoverVisual, proposeRoverDrive,
+  canExitRover, commitRoverDrive, createRoverVisual, getRoverVisual, proposeRoverDrive,
   roverWheelSamplePoints, ROVER_DIMENSIONS,
   type RoverDriveState, type RoverFour, type RoverPose, type RoverVisualFrame, type RoverWheel,
 } from './rover';
@@ -34,6 +34,11 @@ const pivot = (root: THREE.Object3D, key: RoverWheel) => named(root, `rover-${ke
 const body = (root: THREE.Object3D) => named(root, 'rover-body');
 
 describe('rover drive proposal', () => {
+  it('only permits exiting at low speed in either direction', () => {
+    expect([0, 0.3, -0.3].every(canExitRover)).toBe(true);
+    expect([0.31, -0.31, Number.NaN, Infinity].some(canExitRover)).toBe(false);
+  });
+
   it('keeps the existing acceleration, speed limits and neutral drag', () => {
     let state: RoverDriveState = { speedMps: 0, steerYawRad: 0 };
     for (let i = 0; i < 30; i++) state = commitRoverDrive(proposeRoverDrive(state, { throttle: 1, steer: 0 }, 1 / 30), false);

@@ -44,7 +44,7 @@ import { Footprints, footprintSurface } from './footprints';
 import { FrameSamples, SustainedBenchmark } from './performance-monitor';
 import { renderPixelRatio } from './render-quality';
 import {
-  commitRoverDrive, getRoverVisual, proposeRoverDrive, roverWheelSamplePoints,
+  canExitRover, commitRoverDrive, getRoverVisual, proposeRoverDrive, roverWheelSamplePoints,
   type RoverFour, type RoverWheel,
 } from './rover';
 import {
@@ -146,7 +146,7 @@ app.innerHTML = `
     <div id="controlsHint">Click world for mouse look · WASD move · E interact · Space gather · B build</div>
     <div id="joystick"><div id="stick"></div></div>
     <div class="mobile-actions" aria-label="Action pad">
-      <button id="exitVehicle" class="hidden">EXIT</button>
+      <button id="exitVehicle" class="hidden pad-exit" type="button" aria-label="Exit vehicle"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21H4V3h8v18ZM8 12h.01M14 12h7m-3-3 3 3-3 3"/></svg></button>
       <button id="jumpButton" class="pad-jump" aria-label="Jump"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V4m-6 6 6-6 6 6"/></svg><span>Jump</span></button>
       <button id="actionA" class="pad-a" aria-label="Primary action"><strong>A</strong><span>Gather</span></button>
       <button id="actionB" class="pad-b" aria-label="Interact"><strong>B</strong><span>Interact</span></button>
@@ -204,7 +204,6 @@ app.innerHTML = `
       <button data-hub="axe" aria-pressed="false">${icon('axe')}<span>Axe</span></button>
       <button data-hub="saw" aria-pressed="false">${icon('saw')}<span>Saw</span></button>
       <button data-hub="stones" aria-pressed="false">${icon('stones')}<span id="stoneHubCount">Stones 0</span></button>
-      <button data-hub="build">▦<span>Build</span></button>
       <button data-hub="road">╬<span>Road</span></button>
       <button data-hub="terrain">◇<span>Terrain</span></button>
       <button data-hub="paint">◒<span>Paint</span></button>
@@ -225,7 +224,7 @@ app.innerHTML = `
       <canvas id="atlasCanvas" width="920" height="620" aria-label="Interactive world atlas"></canvas>
     </div>
   </div>
-  <div id="npcPanel" class="panel hidden"><button id="closeNpc" class="close" aria-label="Close survivor menu">×</button><h2>MIRA · SURVIVOR</h2><p id="npcStatus">A friendly survivor.</p><button id="npcRecruit" class="primary">RECRUIT</button><button data-job="wood" class="secondary">GATHER WOOD</button><button data-job="stone" class="secondary">GATHER STONE</button><button data-job="idle" class="secondary">REST</button></div>
+  <div id="npcPanel" class="panel hidden"><button id="closeNpc" class="close" aria-label="Close survivor menu">×</button><h2>TARU PAMPULA · SURVIVOR</h2><p id="npcStatus">A friendly survivor.</p><button id="npcRecruit" class="primary">RECRUIT</button><button data-job="wood" class="secondary">GATHER WOOD</button><button data-job="stone" class="secondary">GATHER STONE</button><button data-job="idle" class="secondary">REST</button></div>
   <div id="craftPanel" class="panel pack-panel hidden" role="dialog" aria-labelledby="packTitle">
     <button id="closeCraft" class="close" aria-label="Close pack">×</button>
     <h2 id="packTitle">PACK &amp; CRAFTING</h2>
@@ -262,6 +261,7 @@ app.innerHTML = `
     <label class="setting">Fog start <input id="fogStart" type="range" min="12" max="160" step="2" value="42"></label>
     <label class="setting">Fog end <input id="fogEnd" type="range" min="24" max="220" step="2" value="92"></label>
     <label class="setting">Quality <select id="graphicsQuality"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></label>
+    <label class="setting">Mobile button size <select id="buttonSize"><option value="normal">Normal</option><option value="large">Large</option></select></label>
     <button id="showPerformance" class="secondary" type="button">SHOW PERFORMANCE MONITOR</button>
     <button id="skipIntroduction" class="secondary">SKIP INTRODUCTION</button><button id="restartIntroduction" class="secondary">RESTART INTRODUCTION</button>
     <p>Game version: ${__APP_VERSION__}<br><a href="${import.meta.env.BASE_URL}assets/environment/sky/moon-LICENSE.txt" target="_blank" rel="noopener" style="color:inherit">Moon texture: Solar System Scope (CC BY 4.0)</a><br><a href="${import.meta.env.BASE_URL}assets/animals/red-squirrel-LICENSE.txt" target="_blank" rel="noopener" style="color:inherit">Squirrel model: vinish.dev (CC BY 4.0)</a><br><a href="${import.meta.env.BASE_URL}assets/animals/gray-wolf-LICENSE.txt" target="_blank" rel="noopener" style="color:inherit">Wolf model: vinish.dev (CC BY 4.0)</a><br><a href="${import.meta.env.BASE_URL}assets/animals/grizzly-bear-LICENSE.txt" target="_blank" rel="noopener" style="color:inherit">Bear model: vinish.dev (CC BY 4.0)</a><br><a href="${import.meta.env.BASE_URL}assets/environment/trees/vinish-trees-LICENSE.txt" target="_blank" rel="noopener" style="color:inherit">Palm model: vinish.dev (CC BY 4.0)</a></p><button id="exitFullscreen" class="secondary">EXIT FULLSCREEN</button>
@@ -350,14 +350,14 @@ let npcAppearanceSeed = ((seed >>> 0) + 53917) >>> 0;
 let characterLoadErrorShown = false;
 let backpackLoadErrorShown = false;
 let backpackEquipped = true;
-function useAuthoredCharacter(character: THREE.Group, look: CharacterAppearance, backpack = false) {
+function useAuthoredCharacter(character: THREE.Group, look: CharacterAppearance, backpack = false, highBun = false) {
   attachAuthoredCharacter(character, look, error => {
     console.error('Could not load authored character; using procedural fallback', error);
     if (!characterLoadErrorShown) {
       characterLoadErrorShown = true;
       toast('Character assets could not be loaded; using fallback');
     }
-  }, { backpack, onBackpackError: error => {
+  }, { backpack, highBun, onBackpackError: error => {
     console.error('Could not load backpack art', error);
     if (!backpackLoadErrorShown) {
       backpackLoadErrorShown = true;
@@ -372,8 +372,12 @@ attachHandTorch(player, handTorch.group);
 player.position.set(0, world.heightAt(0, 0), 5);
 scene.add(player);
 
-let npc = createCharacter(appearanceFromSeed(npcAppearanceSeed));
-useAuthoredCharacter(npc, appearanceFromSeed(npcAppearanceSeed));
+function taruAppearance(seedValue: number): CharacterAppearance {
+  return { ...appearanceFromSeed(seedValue), body: 'feminine', hair: 'short', hairColor: 'brown',
+    facialHair: 'none', hat: 'none', height: 'medium' };
+}
+let npc = createCharacter(taruAppearance(npcAppearanceSeed), { highBun: true });
+useAuthoredCharacter(npc, taruAppearance(npcAppearanceSeed), false, true);
 npc.position.set(-4, world.heightAt(-4, 2), 2);
 scene.add(npc);
 
@@ -471,6 +475,11 @@ if (import.meta.env.DEV) {
         heldTools: ['chop', 'mine', 'weapon', 'stick', 'saw'].filter(kind =>
           (player.getObjectByName('authored-character') ?? player).getObjectByName(`tool-${kind}`)?.visible),
         torch: handTorch.group.visible,
+      },
+      npcVisual: {
+        authored: Boolean(npc.getObjectByName('authored-character')),
+        bunBone: npc.getObjectByName('authored-character')?.getObjectByName('taru-high-bun')?.parent?.name ?? null,
+        x: npc.position.x, z: npc.position.z,
       },
       cameraView: { pitch: cameraPitch, directionY: camera.getWorldDirection(new THREE.Vector3()).y,
         groundClearance: cameraGlobalPosition.y - world.heightAt(cameraGlobalPosition.x, cameraGlobalPosition.z) },
@@ -1146,6 +1155,22 @@ renderDistanceInput.addEventListener('input', () => {
 const fogStartInput = document.querySelector<HTMLInputElement>('#fogStart')!;
 const fogEndInput = document.querySelector<HTMLInputElement>('#fogEnd')!;
 const graphicsQualityInput = document.querySelector<HTMLSelectElement>('#graphicsQuality')!;
+const buttonSizeInput = document.querySelector<HTMLSelectElement>('#buttonSize')!;
+try {
+  buttonSizeInput.value = localStorage.getItem('new-dawn-button-size') === 'large' ? 'large' : 'normal';
+} catch (error) {
+  console.warn('Could not read mobile button size', error);
+}
+document.body.classList.toggle('large-controls', buttonSizeInput.value === 'large');
+buttonSizeInput.addEventListener('change', () => {
+  document.body.classList.toggle('large-controls', buttonSizeInput.value === 'large');
+  try {
+    localStorage.setItem('new-dawn-button-size', buttonSizeInput.value);
+  } catch (error) {
+    console.error('Could not save mobile button size', error);
+    toast('Could not save mobile button size');
+  }
+});
 try {
   const savedGraphics = JSON.parse(localStorage.getItem('new-dawn-graphics') ?? '{}') as {
     fogStart?: number; fogEnd?: number; quality?: string;
@@ -1466,10 +1491,10 @@ document.querySelector('#npcRecruit')!.addEventListener('click', async () => {
   npcState.recruited = true;
   refreshNpcPanel();
   updateObjective();
-  if (await saveGame(false)) toast('Mira joined your settlement');
+  if (await saveGame(false)) toast('Taru joined your settlement');
 });
 document.querySelectorAll<HTMLButtonElement>('[data-job]').forEach(button => button.addEventListener('click', () => {
-  if (!npcState.recruited) { toast('Recruit Mira first'); return; }
+  if (!npcState.recruited) { toast('Recruit Taru first'); return; }
   npcState.job = button.dataset.job as NpcJob;
   refreshNpcPanel();
   updateObjective();
@@ -1479,7 +1504,7 @@ document.querySelector('#closeNpc')!.addEventListener('click', () => document.qu
 function refreshNpcPanel() {
   document.querySelector('#npcStatus')!.textContent = npcState.recruited
     ? `Assigned: ${npcState.job}. ${npcState.carrying ? `Carrying ${npcState.carrying}.` : 'Build storage for deliveries.'}`
-    : 'A friendly survivor. Recruit Mira to assign a gathering task.';
+    : 'A friendly survivor. Recruit Taru to assign a gathering task.';
   (document.querySelector('#npcRecruit') as HTMLButtonElement).disabled = npcState.recruited;
 }
 
@@ -1523,8 +1548,8 @@ function resetWorld() {
   scene.remove(npc);
   disposeCharacter(player);
   disposeCharacter(npc);
-  npc = createCharacter(appearanceFromSeed(npcAppearanceSeed));
-  useAuthoredCharacter(npc, appearanceFromSeed(npcAppearanceSeed));
+  npc = createCharacter(taruAppearance(npcAppearanceSeed), { highBun: true });
+  useAuthoredCharacter(npc, taruAppearance(npcAppearanceSeed), false, true);
   scene.add(npc);
   buildings.forEach((building, index) => {
     scene.remove(building);
@@ -2166,7 +2191,7 @@ function placementIssue() {
   if (problem) return problem;
   const footprint = buildingRadius(buildKind);
   if (structures.some(piece => Math.hypot(piece.x - buildTarget.x, piece.z - buildTarget.z) < footprint + 1)) return 'Too close to another building';
-  if (Math.hypot(buildTarget.x - npc.position.x, buildTarget.z - npc.position.z) < footprint + 0.6) return 'Move away from Mira';
+  if (Math.hypot(buildTarget.x - npc.position.x, buildTarget.z - npc.position.z) < footprint + 0.6) return 'Move away from Taru';
   if (Math.hypot(buildTarget.x - vehicle.position.x, buildTarget.z - vehicle.position.z) < footprint + 1.2) return 'Move away from the rover';
   if (world.findNearest(buildTarget.x, buildTarget.z, footprint + 0.45) || world.findNearestDeposit(buildTarget.x, buildTarget.z, footprint + 0.45)) return 'Clear nearby resources';
   const radius = footprint * 0.7;
@@ -2524,6 +2549,11 @@ function nearestPost() {
 function interact() {
   if (!gameStarted || gameplayBlocked() || buildMode) return;
   if (driving) {
+    if (!canExitRover(vehicleSpeed)) {
+      toast('⛔ Stop the rover before exiting');
+      return;
+    }
+    clearMovement();
     playerGeographic = moveGeographic(vehicleGeographic, 90, 2);
     const exitPosition = projectGeographicPosition(playerGeographic, vehicle.position);
     player.position.set(exitPosition.x, world.heightAt(exitPosition.x, exitPosition.z), exitPosition.z);
@@ -2538,6 +2568,7 @@ function interact() {
     actionA.setAttribute('aria-label', 'Primary action');
     gatherHintTimer = 0;
     document.querySelector('#actionB span')!.textContent = 'Interact';
+    actionB.setAttribute('aria-label', 'Interact');
     toast('Exited vehicle');
     return;
   }
@@ -2586,6 +2617,7 @@ function interact() {
     gatherHint = 'gather';
     gatherHintTimer = 0;
     document.querySelector('#actionB span')!.textContent = 'Brake';
+    actionB.setAttribute('aria-label', 'Brake or reverse');
     toast('Driving rover');
   } else if (worldDistance(npc.position, player.position) < 3) {
     releasePointerLock();
@@ -3341,7 +3373,7 @@ function updateGame(dt: number) {
   const length = Math.hypot(inputX, inputZ);
   const speed = keys.has('ShiftLeft') ? 6.5 : 4;
   if (driving) {
-    const throttle = !gameplayBlocked() && accelerateTouch ? 1 : !gameplayBlocked() && brakeTouch ? -1 : -inputZ;
+    const throttle = !gameplayBlocked() && brakeTouch ? -1 : !gameplayBlocked() && accelerateTouch ? 1 : -inputZ;
     const proposal = proposeRoverDrive({ speedMps: vehicleSpeed, steerYawRad: roverSteeringYaw },
       { throttle, steer: inputX }, dt);
     const proposedYaw = vehicle.rotation.y + proposal.turnRad;

@@ -282,8 +282,8 @@ button:focus-visible { outline: 2px solid #d9b56b; outline-offset: 2px; }
 
 @media (pointer: coarse), (max-width: 800px) {
   .mobile-actions { display: grid; grid-template: repeat(3, 60px) / repeat(3, 60px); gap: 2px; right: max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); }
-  .mobile-actions button:not(#exitVehicle) { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; width: 60px; height: 60px; padding: 3px; border: 1px solid rgba(226,240,229,.36); border-radius: 20px; background: rgba(9,31,34,.64); box-shadow: inset 0 1px rgba(255,255,255,.1), 0 3px 12px rgba(0,0,0,.2); backdrop-filter: blur(7px); touch-action: none; }
-  .mobile-actions button:not(#exitVehicle):active { background: rgba(86,132,105,.85); border-color: #e4efd7; transform: scale(.95); }
+  .mobile-actions button { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; width: 60px; height: 60px; padding: 3px; border: 1px solid rgba(226,240,229,.36); border-radius: 20px; background: rgba(9,31,34,.64); box-shadow: inset 0 1px rgba(255,255,255,.1), 0 3px 12px rgba(0,0,0,.2); backdrop-filter: blur(7px); touch-action: none; }
+  .mobile-actions button:active { background: rgba(86,132,105,.85); border-color: #e4efd7; transform: scale(.95); }
   .mobile-actions button strong { font: 800 20px Georgia, serif; }
   .mobile-actions button span { font: 600 9px sans-serif; color: #e1ece0; }
   .mobile-actions svg { width: 25px; height: 25px; fill: none; stroke: #f0f5e8; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
@@ -292,14 +292,37 @@ button:focus-visible { outline: 2px solid #d9b56b; outline-offset: 2px; }
   .pad-b { grid-area: 2 / 3; }
   .pad-weapon { grid-area: 3 / 2; }
   #weaponAmmo { position: absolute; top: 3px; right: 3px; min-width: 18px; padding: 2px 3px; border-radius: 10px; background: #d7bd80; color: #172f2d; font: 700 10px sans-serif; }
-  #exitVehicle:not(.hidden) { position: absolute; right: 0; bottom: calc(100% + 5px); width: 54px; height: 40px; border-radius: 12px; }
+  .pad-exit { grid-area: 1 / 2; }
+  #hud.driving .pad-jump, #hud.driving .pad-weapon { display: none; }
   .quickbar { bottom: calc(max(12px, env(safe-area-inset-bottom)) + 192px); }
   body:has(.panel:not(.hidden)) .quickbar, body:has(.tool-toolbar:not(.hidden)) .quickbar { display: none; }
   .panel, .tool-toolbar, .placement-toolbar { max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 62px - max(12px, env(safe-area-inset-bottom)) - 192px); }
   .tool-hub { max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 56px - max(12px, env(safe-area-inset-bottom)) - 192px); }
 }
 
+@media (pointer: coarse), (max-width: 800px) {
+  body.large-controls .mobile-actions { grid-template: repeat(3, 68px) / repeat(3, 68px); }
+  body.large-controls .mobile-actions button { width: 68px; height: 68px; }
+  body.large-controls .quickbar { bottom: calc(max(12px, env(safe-area-inset-bottom)) + 216px); }
+  body.large-controls .quickbar button { width: 52px; height: 52px; }
+  body.large-controls #joystick { width: 106px; height: 106px; }
+  body.large-controls #stick { left: 33px; top: 33px; }
+  body.large-controls .panel, body.large-controls .tool-toolbar, body.large-controls .placement-toolbar {
+    max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 62px - max(12px, env(safe-area-inset-bottom)) - 216px);
+  }
+  body.large-controls .tool-hub {
+    max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 56px - max(12px, env(safe-area-inset-bottom)) - 216px);
+  }
+}
+
 @media (orientation: portrait) and (max-width: 600px) and (pointer: coarse) {
   .panel, .tool-toolbar { max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 214px - max(12px, env(safe-area-inset-bottom)) - 192px); }
   .tool-hub { max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 96px - max(12px, env(safe-area-inset-bottom)) - 192px); }
+  body.large-controls .panel, body.large-controls .tool-toolbar { max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 214px - max(12px, env(safe-area-inset-bottom)) - 216px); }
+  body.large-controls .tool-hub { max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 96px - max(12px, env(safe-area-inset-bottom)) - 216px); }
+}
+
+@media (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
+  body.large-controls .panel.pack-panel { max-height: calc(100dvh - 24px); }
+  body.large-controls #pausePanel { top: max(12px, env(safe-area-inset-top)); max-height: calc(100dvh - 24px); }
 }

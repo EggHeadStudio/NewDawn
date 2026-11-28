@@ -172,8 +172,7 @@ test('captures and checks mobile HUD gameplay and expanded panels', async ({ pag
     await screenshot(page, folder, `tool-hub-${size}.png`);
     await page.locator('#closeToolHub').click();
 
-    await page.locator('#toolHubButton').click();
-    await page.locator('[data-hub="build"]').click();
+    await page.locator('[data-tool="build"]').click();
     await expect(page.locator('#buildPanel')).toBeVisible();
     await expect(page.locator('#toast')).toBeHidden();
     await expectInsideViewport(page, '#buildPanel', viewport);

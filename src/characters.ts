@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { defaultAppearance, type CharacterAppearance, type Outfit } from './appearance';
-import { disposeAuthoredCharacter } from './authored-character';
+import { createHighBun, disposeAuthoredCharacter } from './authored-character';
 
 type Surface = THREE.MeshStandardMaterial;
 type Ring = readonly [y: number, width: number, depth: number, offsetZ?: number];
@@ -154,7 +154,7 @@ function hand(parent: THREE.Object3D, surface: Surface, side: number, fingerGeom
   }
 }
 
-export function createCharacter(input: Outfit | CharacterAppearance = 'ember') {
+export function createCharacter(input: Outfit | CharacterAppearance = 'ember', options: { highBun?: boolean } = {}) {
   const appearance = typeof input === 'string' ? defaultAppearance(input) : input;
   const root = new THREE.Group();
   const skin = material({ light: '#d3a68e', warm: '#b98365', brown: '#8e604b', deep: '#5e4035' }[appearance.skin]);
@@ -246,6 +246,11 @@ export function createCharacter(input: Outfit | CharacterAppearance = 'ember') {
         const curl = part(head, new THREE.IcosahedronGeometry(0.038, 1), hair, [Math.sin(angle) * 0.10, 0.145, Math.cos(angle) * 0.085]);
         curl.scale.y = 0.8;
       }
+    }
+    if (options.highBun) {
+      const bun = createHighBun();
+      bun.position.set(0, 0.13, -0.08);
+      head.add(bun);
     }
   }
   if (appearance.facialHair !== 'none') {

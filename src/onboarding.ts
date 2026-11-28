@@ -17,6 +17,6 @@ export function onboardingObjective(state: OnboardingState, wood: number, hasFlo
   if (!state.openedPack) return 'Open Pack · I / Tools → Pack';
   if (!hasFloor && wood < 2) return 'Gather 2 wood for a floor';
   if (!hasFloor) return 'Build a modular floor · B / Build';
-  if (!recruited) return 'Meet and recruit Mira · E / B';
+  if (!recruited) return 'Meet and recruit Taru · E / B';
   return null;
 }

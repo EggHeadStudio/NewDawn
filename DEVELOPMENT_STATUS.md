@@ -1,5 +1,12 @@
 # Development status
 
+## Phase 1A — mobile controls, menus and Taru
+
+- The rover's mobile action pad now includes an accessible exit icon; attempts to exit above **0.3 m/s** forward or reverse show a stop hint. The joystick and driving pedals work simultaneously; brake takes priority over gas. Desktop key bindings remain unchanged, with the same safety guard. Normal/large mobile button sizing persists separately in localStorage and does not change saves.
+- Tools retains the selected-tool icon and Pack, with its duplicate Build option removed; the standalone Build shortcut and minimap-to-Atlas remain. The survivor is now **Taru Pampula**, normally called Taru, with brown hair and a high bun attached to the animated head, plus a procedural fallback. Saved NPC identity and state are retained.
+- Actual gameplay captures: [desktop Taru](art-review/phase-1a/taru-desktop.png), touch-emulated driving [portrait](art-review/phase-1a/driving-portrait.png) / [landscape](art-review/phase-1a/driving-landscape.png) and [landscape Pack](art-review/phase-1a/pack-landscape.png). The hairstyle reference image was not available in this session; the requested exact match remains unverified.
+- **290/290 units**, production build and **313/313** serial Chrome browser cases pass. Real mobile devices and assistive technology were not tested. A3.2 visual acceptance and the previously disabled rover/tree/animal/player collision integration remain open; this phase does not complete them.
+
 ## Weekend gameplay — rover fallback and wildlife regression
 
 - The rover now has an original procedural body, steering, rolling wheels and terrain-responsive tilt; its optional saved heading is compatible with older saves. In the actual game, compare the [old vehicle](art-review/weekend-rover/before.png) and [new vehicle](art-review/weekend-rover/after.png). These use a saved-position/noon fixture; the new-model image predates the collision fallback, but the retained model is the same.

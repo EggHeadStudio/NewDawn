@@ -1,5 +1,12 @@
 # Test report
 
+## Phase 1A — mobile controls, menus and Taru
+
+- `npm test`: **290/290** in 43 files. `npm run build`: TypeScript and Vite pass; JS **962.89 kB / 270.42 kB gzip**, with the existing chunk-size warning. The full `npm run test:e2e -- --workers=1` run, using the isolated config/workspace and installed Chrome, passed **313/313 in 54.1 minutes**.
+- Focused browser checks used **1280×720** desktop and touch-emulated **390×844** and **844×390**: simultaneous joystick and gas, braking/reverse, blocked forward/reverse exits, safe exit, normal/large setting reload, selected-tool persistence, Pack and Atlas. The desktop keyboard guard and Taru recruitment/reload were also exercised. Unit coverage includes both signs and the threshold. Existing mobile HUD/input and onboarding cases passed during targeted runs. An initial targeted run accidentally nested the desktop test in touch contexts and failed its desktop-width assertion twice; moving it to a desktop context fixed the test without changing that assertion.
+- Inspected gameplay [desktop Taru](art-review/phase-1a/taru-desktop.png), driving [portrait](art-review/phase-1a/driving-portrait.png) / [landscape](art-review/phase-1a/driving-landscape.png) and [landscape Pack](art-review/phase-1a/pack-landscape.png). The unavailable hairstyle reference means the depicted high bun is not verified against the requested image. Emulation is not a physical-device test; real-device and screen-reader acceptance remain open.
+- Existing saves retain their NPC state and seed; the button preference is a separate localStorage value. The full regression includes legacy-save and offline cases. Existing rover collision and broader A3.2 visual limitations remain unchanged.
+
 ## Weekend gameplay — rover fallback and wildlife regressions
 
 - The procedural rover has **14 meshes / 4,872 triangles** and no downloaded model. A saved-position/noon gameplay fixture shows the [old model](art-review/weekend-rover/before.png) and [new model](art-review/weekend-rover/after.png); the latter was captured before disabling the new collision integration but depicts the same retained visual. The existing original-rover desktop Chrome stationary 30-second sample was approximately **60 FPS, 16.7 ms p95, zero frames over 50 ms**. No matched current-model performance sample has been established; refresh-limited CPU frame timing is not GPU or physical-device performance.

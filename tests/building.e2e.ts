@@ -415,6 +415,9 @@ test.describe('touch camera gestures', () => {
     await page.keyboard.down('w');
     await page.waitForTimeout(900);
     await page.keyboard.up('w');
+    await expect.poll(() => page.evaluate(() => Math.abs((window as Window & {
+      __newDawnState: () => { vehicle: { speed: number } }
+    }).__newDawnState().vehicle.speed))).toBeLessThanOrEqual(0.3);
     await page.keyboard.press('e');
     await expect(page.locator('#vehicleIndicator')).toBeHidden();
     await save(page);
