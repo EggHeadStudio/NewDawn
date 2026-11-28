@@ -4,17 +4,22 @@ import { makeMidFoliage, type TreeDetail } from './vegetation-lod';
 import { installTreeClearance } from './tree-occlusion';
 
 export type NatureTreeFamily = 'deciduous' | 'conifer';
-type NatureTreePrototype = NatureTreeFamily | 'pine' | 'mature' | 'mature-pine' | 'mature-fir';
-export type NatureTreeVariant = 'default' | 'pine' | 'mature' | 'mature-pine' | 'mature-fir' | 'young-fir';
+type NatureTreePrototype = NatureTreeFamily | 'pine' | 'mature' | 'mature-birch' | 'mature-pine' | 'mature-fir' | 'palm';
+export type NatureTreeVariant = 'default' | 'pine' | 'mature' | 'mature-birch' | 'mature-pine' | 'mature-fir' | 'young-fir' | 'palm';
 /** Young firs reuse the cached whorled fir at a sub-adult height instead of the sparse sapling. */
 export const YOUNG_FIR_SCALE = 0.6;
 type WindUniforms = { time: { value: number }; wind: { value: number } };
+
+function foliageMaterial(material: THREE.Material) {
+  return /leaf|leaves|twig/i.test(material.name);
+}
 
 export class NatureAssets {
   private readonly prototypes = new Map<NatureTreePrototype, THREE.Group>();
   private readonly midFoliage = new Map<THREE.BufferGeometry, THREE.BufferGeometry>();
   private readonly loader = new GLTFLoader();
   private firStatus: 'idle' | 'loading' | 'ready' | 'failed' = 'idle';
+  private palmStatus: 'idle' | 'loading' | 'ready' | 'failed' = 'idle';
   private disposed = false;
   readonly wind: WindUniforms = { time: { value: 0 }, wind: { value: 0 } };
 
@@ -24,13 +29,21 @@ export class NatureAssets {
     this.onReady('conifer');
   };
 
+  private readonly retryPalm = () => {
+    if (this.palmStatus !== 'failed' || this.disposed) return;
+    this.palmStatus = 'idle';
+    this.onReady('deciduous');
+  };
+
   constructor(private readonly onReady: (family: NatureTreeFamily) => void, private readonly alphaCoverage = false) {
     window.addEventListener('online', this.retryFir);
+    window.addEventListener('online', this.retryPalm);
     const assets: Array<[NatureTreePrototype, NatureTreeFamily, string, number]> = [
       ['conifer', 'conifer', 'fir-sapling.glb', 4],
       ['pine', 'conifer', 'pine-sapling.glb', 5],
       ['deciduous', 'deciduous', 'tree-small.glb', 4],
       ['mature', 'deciduous', 'mature-broadleaf.glb', 7],
+      ['mature-birch', 'deciduous', 'mature-birch.glb', 7],
       ['mature-pine', 'conifer', 'mature-pine.glb', 9],
     ];
     for (const [prototype, family, name, heightTarget] of assets) {
@@ -48,7 +61,7 @@ export class NatureAssets {
       scene.traverse(object => {
         if (!(object instanceof THREE.Mesh)) return;
         const materials = Array.isArray(object.material) ? object.material : [object.material];
-        if (materials.some(material => /leaves|twig/i.test(material.name)) && !this.midFoliage.has(object.geometry)) {
+        if (materials.some(foliageMaterial) && !this.midFoliage.has(object.geometry)) {
           this.midFoliage.set(object.geometry, makeMidFoliage(object.geometry));
         }
       });
@@ -65,12 +78,16 @@ export class NatureAssets {
       wrapper.add(scene);
       this.prototypes.set(prototype, wrapper);
       if (prototype === 'mature-fir') this.firStatus = 'ready';
+      if (prototype === 'palm') this.palmStatus = 'ready';
       this.onReady(family);
     } catch (error) {
       if (this.disposed) return;
       if (prototype === 'mature-fir') {
         this.firStatus = 'failed';
         console.warn(`Optional tree asset unavailable; using local fallback: ${url}`, error);
+      } else if (prototype === 'palm') {
+        this.palmStatus = 'failed';
+        console.warn(`Regional tree asset unavailable; using local fallback: ${url}`, error);
       } else {
         console.error(`Failed to load local tree asset ${url}`, error);
       }
@@ -83,10 +100,16 @@ export class NatureAssets {
       this.firStatus = 'loading';
       void this.load('mature-fir', 'conifer', 'mature-fir.glb', 9);
     }
-    const key = family === 'conifer' && variant === 'pine' ? 'pine'
+    const palm = family === 'deciduous' && variant === 'palm';
+    if (palm && this.palmStatus === 'idle') {
+      this.palmStatus = 'loading';
+      void this.load('palm', 'deciduous', 'vinish-fan-palm.glb', 7);
+    }
+    const key = palm ? 'palm' : (family === 'conifer' && variant === 'pine' ? 'pine'
       : family === 'conifer' && variant === 'mature-pine' ? 'mature-pine'
       : fir ? 'mature-fir'
-      : family === 'deciduous' && variant === 'mature' ? 'mature' : family;
+      : family === 'deciduous' && variant === 'mature-birch' ? 'mature-birch'
+      : family === 'deciduous' && variant === 'mature' ? 'mature' : family);
     const prototype = this.prototypes.get(key);
     if (!prototype) return undefined;
     const instance = prototype.clone(true);
@@ -104,7 +127,7 @@ export class NatureAssets {
         material.userData.natureOpacity = material.opacity;
         material.userData.natureTransparent = material.transparent;
         material.userData.natureDepthWrite = material.depthWrite;
-        const foliage = /leaves|twig/i.test(material.name);
+        const foliage = foliageMaterial(material);
         if (foliage && material instanceof THREE.MeshStandardMaterial) {
           material.alphaToCoverage = this.alphaCoverage && material.alphaTest > 0 && !material.transparent;
           object.userData.foliageBase = `#${material.color.getHexString()}`;
@@ -143,7 +166,8 @@ export class NatureAssets {
           shadow.customProgramCacheKey = () => 'nature-foliage-shadow-wind-v1';
           object.customDepthMaterial = shadow;
         }
-        if (material instanceof THREE.MeshStandardMaterial) installTreeClearance(material);
+        // A local cut through the narrow palm trunk leaves visibly disconnected pieces.
+        if (material instanceof THREE.MeshStandardMaterial && material.name !== 'Palm_Trunk') installTreeClearance(material);
         return material;
       });
       object.material = Array.isArray(object.material) ? materials : materials[0];
@@ -164,6 +188,7 @@ export class NatureAssets {
   dispose() {
     this.disposed = true;
     window.removeEventListener('online', this.retryFir);
+    window.removeEventListener('online', this.retryPalm);
     this.midFoliage.forEach(geometry => geometry.dispose());
     this.midFoliage.clear();
     for (const prototype of this.prototypes.values()) disposePrototype(prototype);

@@ -1,12 +1,13 @@
 import { expect, test, type Page } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { sawTree, timberAction } from './timber-helpers';
 
 type Tree = { id: string; x: number; z: number; family: string; authored: boolean };
 type Snapshot = { trees: Tree[]; player: { x: number; z: number } };
 type SavedWorld = { version: number; seed: number; player: { x: number; y: number; z: number };
   npc: { x: number; z: number }; vehicle: { x: number; z: number };
-  planetPositions?: unknown; onboarding?: unknown; wildlife: unknown[] };
+  planetPositions?: unknown; onboarding?: unknown; wildlife: unknown[]; selectedWeapon?: string };
 
 async function changeSave(page: Page, change: 'tree' | 'mira' | 'legacy', tree?: Tree) {
   await page.evaluate(async ({ change, tree }) => {
@@ -26,6 +27,7 @@ async function changeSave(page: Page, change: 'tree' | 'mira' | 'legacy', tree?:
     } else {
       record.version = 11;
       delete record.planetPositions;
+      record.selectedWeapon = 'fists';
       record.wildlife = [];
       if (change === 'tree' && tree) {
         const world = new World(Number(record.seed));
@@ -89,9 +91,11 @@ test('guided introduction follows real gathering, construction and Mira interact
     return Math.hypot(snapshot.player.x - tree.x, snapshot.player.z - tree.z) < 0.5
       && snapshot.trees.some(item => item.id === tree.id && item.authored);
   }, { timeout: 30000 }).toBe(true);
-  await page.keyboard.press('Space');
+  await sawTree(page, tree.id);
+  await timberAction(page);
   await expect(page.locator('#toast')).toContainText('wood');
   await expect(page.locator('#objectiveText')).toContainText('Open Pack');
+  await page.locator('#toolHubButton').click();
   await page.locator('#inventoryButton').click();
   await expect(page.locator('#objectiveText')).toContainText('modular floor');
   await page.locator('#closeCraft').click();

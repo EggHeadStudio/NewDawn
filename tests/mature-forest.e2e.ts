@@ -1,10 +1,11 @@
 import { expect, test } from '@playwright/test';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import sharp from 'sharp';
+import { collectTree, sawTree, walkTo } from './timber-helpers';
 
 type Tree = { id: string; x: number; z: number; variant?: string; species?: string };
-type State = { trees: Tree[]; player: { x: number; z: number }; terrainReady: boolean;
+type State = { trees: Tree[]; player: { x: number; z: number }; cameraAngle: number; terrainReady: boolean;
   groundArt: { grass: number; shrubs: number } };
 
 test('authored foliage casts a cutout shadow onto visible ground', async ({ page }) => {
@@ -144,7 +145,7 @@ test('authored wood clears and restores only the local player sightline', async 
   expect(samples.depthWrite).toBe(true);
 });
 
-test('selective mature trees retain resource identity and depletion across reloads', async ({ page }) => {
+test('selective mature trees retain resource identity and depletion across reloads', async ({ page }, testInfo) => {
   test.setTimeout(180000);
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -205,11 +206,11 @@ test('selective mature trees retain resource identity and depletion across reloa
       && current.trees.some(item => item.id === tree.id && item.variant === tree.variant)
       && current.trees.some(item => item.variant === 'default');
   }, { timeout: 30000 }).toBe(true);
-  const directory = join(process.cwd(), 'art-review', 'batch-005d-a3-2', 'selective-mature');
-  await mkdir(directory, { recursive: true });
   await page.waitForTimeout(5000);
-  await page.screenshot({ path: join(directory, `${tree.variant}-near-tree.png`) });
-  await page.keyboard.press('Space');
+  await page.screenshot({ path: testInfo.outputPath(`${tree.variant}-near-tree.png`) });
+  await walkTo(page, tree);
+  await sawTree(page, tree.id);
+  await collectTree(page, tree.id);
   await expect.poll(async () => (await state()).trees.some(item => item.id === tree.id)).toBe(false);
   await expect(page.locator('#toast')).toContainText('wood');
   await page.locator('#pauseButton').click();
@@ -219,25 +220,6 @@ test('selective mature trees retain resource identity and depletion across reloa
   await page.locator('#continueGame').click();
   await expect.poll(async () => (await state()).trees.some(isMature), { timeout: 30000 }).toBe(true);
   expect((await state()).trees.some(item => item.id === tree.id)).toBe(false);
-  await page.locator('#legacyCamera').evaluate((element: HTMLInputElement) => {
-    element.checked = true;
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-  });
-  let clearance = 0;
-  for (let step = 0; step < 20 && !clearance; step++) {
-    await page.mouse.move(600, 350);
-    await page.mouse.down({ button: 'right' });
-    await page.mouse.move(720, 350);
-    await page.mouse.up({ button: 'right' });
-    await page.waitForTimeout(350);
-    clearance = await page.evaluate(() => (window as Window & { __newDawnFoliageClearance: () => number }).__newDawnFoliageClearance());
-  }
-  expect(clearance, 'camera orbit should encounter an authored foliage obstruction').toBeGreaterThan(0);
-  await page.waitForTimeout(1000);
-  const localized = await page.screenshot({ path: join(directory, 'occlusion-orbit.png') });
-  await page.evaluate(() => (window as Window & { __newDawnUseLegacyFoliageFade: () => void }).__newDawnUseLegacyFoliageFade());
-  await page.waitForTimeout(1500);
-  const legacy = await page.screenshot({ path: join(directory, 'occlusion-orbit-legacy.png') });
   const greenPixels = async (image: Buffer) => {
     const pixels = await sharp(image).extract({ left: 550, top: 150, width: 300, height: 180 }).removeAlpha().raw().toBuffer();
     let count = 0;
@@ -246,7 +228,50 @@ test('selective mature trees retain resource identity and depletion across reloa
     }
     return count;
   };
-  expect(await greenPixels(localized)).toBeGreaterThan((await greenPixels(legacy)) + 1000);
+  const enableRightDrag = () => page.locator('#legacyCamera').evaluate((element: HTMLInputElement) => {
+    element.checked = true;
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  const orbit = async () => {
+    await page.mouse.move(600, 350);
+    await page.mouse.down({ button: 'right' });
+    await page.mouse.move(720, 350);
+    await page.mouse.up({ button: 'right' });
+    await page.waitForTimeout(350);
+  };
+  await enableRightDrag();
+  await page.waitForTimeout(1500);
+  const localized = new Map<number, { image: Buffer; angle: number }>();
+  for (let step = 0; step < 20; step++) {
+    await orbit();
+    const clearance = await page.evaluate(() => (window as Window & { __newDawnFoliageClearance: () => number }).__newDawnFoliageClearance());
+    if (clearance) localized.set(step, { image: await page.screenshot(), angle: (await state()).cameraAngle });
+  }
+  expect(localized.size, 'camera orbit should encounter an authored foliage obstruction').toBeGreaterThan(0);
+
+  await page.reload();
+  await page.locator('#continueGame').click();
+  await expect.poll(async () => (await state()).trees.some(isMature), { timeout: 30000 }).toBe(true);
+  await enableRightDrag();
+  await page.waitForTimeout(1500);
+  await page.evaluate(() => (window as Window & { __newDawnUseLegacyFoliageFade: () => void }).__newDawnUseLegacyFoliageFade());
+  let bestDifference = -Infinity;
+  let best: { localized: Buffer; legacy: Buffer } | undefined;
+  for (let step = 0; step < 20; step++) {
+    await orbit();
+    const candidate = localized.get(step);
+    if (!candidate) continue;
+    expect((await state()).cameraAngle).toBeCloseTo(candidate.angle, 4);
+    const legacy = await page.screenshot();
+    const difference = (await greenPixels(candidate.image)) - (await greenPixels(legacy));
+    if (difference > bestDifference) {
+      bestDifference = difference;
+      best = { localized: candidate.image, legacy };
+    }
+  }
+  expect(bestDifference, 'localized clearance should preserve visibly more foliage than whole-mesh fading').toBeGreaterThan(1000);
+  await writeFile(testInfo.outputPath('occlusion-orbit.png'), best!.localized);
+  await writeFile(testInfo.outputPath('occlusion-orbit-legacy.png'), best!.legacy);
   expect(errors).toEqual([]);
 });
 

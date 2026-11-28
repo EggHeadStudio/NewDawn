@@ -57,6 +57,189 @@ describe('procedural world', () => {
     expect(counts.pine.young).toBeUndefined();
     expect(counts.pine.mature / 2000).toBeLessThan(0.22);
   });
+
+  it('grows some birches into larger trees without changing existing harvested quantities', () => {
+    const world = new World(1847, 1);
+    const birches = world.group.children.filter(object => object.userData.treeSpecies === 'birch');
+    const adults = birches.filter(tree => tree.userData.natureMature);
+    const younger = birches.filter(tree => !tree.userData.natureMature);
+    expect(adults.length).toBeGreaterThan(0);
+    expect(younger.length).toBeGreaterThan(0);
+    const adult = adults.find(tree => younger.some(other => Math.abs(other.scale.x - tree.scale.x) < 0.05))!;
+    const small = younger.find(tree => Math.abs(tree.scale.x - adult.scale.x) < 0.05)!;
+    const fell = (tree: THREE.Object3D) => {
+      const position = world.resourceLocation(tree);
+      world.workTree(tree, true, position);
+      world.workTree(tree, true, position);
+      const result = world.workTree(tree, true, position);
+      if (!result || result.kind !== 'felled') throw new Error('Expected a felled birch');
+      return result.total;
+    };
+    expect(fell(adult)).toBeGreaterThan(fell(small) * 1.5);
+    const id = adult.userData.resourceId as string;
+    const position = { ...world.resourceLocation(adult) };
+    world.dispose();
+
+    const reloaded = new World(1847, 1);
+    reloaded.restoreTreeHarvest({ [id]: { phase: 'fallen', progress: 1, total: 5, direction: 0 } });
+    const restored = reloaded.group.children.find(tree => tree.userData.resourceId === id)!;
+    expect(reloaded.workTree(restored, true, position)).toMatchObject({ kind: 'cut', total: 5 });
+    expect(reloaded.workTree(restored, false, position)).toMatchObject({ kind: 'collected', amount: 3, remaining: 2 });
+    reloaded.updateChunks(position.x + 150, position.z + 150, true);
+    reloaded.updateChunks(position.x, position.z, true);
+    const returned = reloaded.group.children.find(tree => tree.userData.resourceId === id)!;
+    expect(reloaded.workTree(returned, false, position)).toMatchObject({ kind: 'collected', amount: 2, remaining: 0 });
+    expect(reloaded.depletedSnapshot()).toContain(id);
+    expect(reloaded.workTree(returned, false, position)).toBeUndefined();
+    reloaded.dispose();
+  });
+
+  it('retains existing palm log amounts through streaming and reload without duplicating wood', () => {
+    const center = { x: -600004.3, z: -600016.9 };
+    const id = '-600003,-600015';
+    const world = new World(1847, 1);
+    world.updateChunks(center.x, center.z, true);
+    const original = world.group.children.find(tree => tree.userData.resourceId === id)!;
+    expect(original.userData.treeSpecies).toBe('palm');
+    const location = { ...world.resourceLocation(original) };
+    world.restoreTreeHarvest({ [id]: { phase: 'logs', total: 7, remaining: 4, direction: 0 } });
+    const restored = world.group.children.find(tree => tree.userData.resourceId === id)!;
+    expect(world.treeHarvestState(restored)).toEqual({ phase: 'logs', total: 7, remaining: 4, direction: 0 });
+    expect(world.workTree(restored, false, location)).toMatchObject({ kind: 'collected', amount: 3, remaining: 1 });
+    const progress = world.treeHarvestSnapshot();
+    world.dispose();
+
+    const reloaded = new World(1847, 1);
+    reloaded.restoreTreeHarvest(progress);
+    reloaded.updateChunks(center.x, center.z, true);
+    reloaded.updateChunks(center.x + 150, center.z + 150, true);
+    reloaded.updateChunks(center.x, center.z, true);
+    const returned = reloaded.group.children.find(tree => tree.userData.resourceId === id)!;
+    expect(reloaded.treeHarvestState(returned)).toEqual({ phase: 'logs', total: 7, remaining: 1, direction: 0 });
+    expect(reloaded.workTree(returned, false, location)).toMatchObject({ kind: 'collected', amount: 1, remaining: 0 });
+    expect(reloaded.depletedSnapshot()).toContain(id);
+    reloaded.updateChunks(center.x + 150, center.z + 150, true);
+    reloaded.updateChunks(center.x, center.z, true);
+    expect(reloaded.group.children.some(tree => tree.userData.resourceId === id)).toBe(false);
+    reloaded.dispose();
+  });
+
+  it('requires a saw, preserves each harvest stage across streaming and reload, and never duplicates wood', () => {
+    const world = new World(1847, 1);
+    const tree = world.group.children.find(object => object.userData.resource === 'wood')!;
+    const id = tree.userData.resourceId as string;
+    const location = { ...world.resourceLocation(tree) };
+    const actor = { x: location.x - 1, z: location.z };
+    expect(world.workTree(tree, true, { x: location.x + 100, z: location.z })).toBeUndefined();
+    expect(world.workTree(tree, false, actor)).toEqual({ kind: 'needs-saw' });
+    expect(world.workTree(tree, true, { x: location.x - 2, z: location.z })).toEqual({ kind: 'out-of-reach' });
+    expect(world.treeHarvestState(tree)).toBeNull();
+    expect(world.workTree(tree, true, actor)).toMatchObject({ kind: 'felling', progress: 1 });
+    expect(world.gatherNearest(location.x, location.z, 0.1, 'wood')).toBeUndefined();
+    expect(world.workTree(tree, true, actor)).toMatchObject({ kind: 'felling', progress: 2 });
+    const felled = world.workTree(tree, true, actor);
+    expect(felled).toMatchObject({ kind: 'felled' });
+    if (!felled || felled.kind !== 'felled') throw new Error('Expected a felled tree');
+    expect(world.workTree(tree, true, actor)).toEqual({ kind: 'falling' });
+    world.animate(0, 0, 0.8);
+    const midway = new THREE.Vector3(0, 1, 0).applyQuaternion(tree.quaternion);
+    expect(midway.y).toBeGreaterThan(0.1);
+    expect(midway.y).toBeLessThan(0.9);
+    world.animate(800, 0, 0.8);
+    expect(new THREE.Vector3(0, 1, 0).applyQuaternion(tree.quaternion).y).toBeCloseTo(0);
+    expect(world.workTree(tree, false, actor)).toEqual({ kind: 'needs-saw' });
+    expect(world.workTree(tree, true, actor)).toMatchObject({ kind: 'sawing', progress: 1 });
+    const savedFallen = world.treeHarvestSnapshot();
+    world.updateChunks(location.x + 150, location.z + 150, true);
+    world.updateChunks(location.x, location.z, true);
+    const streamed = world.group.children.find(object => object.userData.resourceId === id)!;
+    expect(streamed).toBeDefined();
+    expect(world.treeHarvestState(streamed)).toEqual(savedFallen[id]);
+    expect(new THREE.Vector3(0, 1, 0).applyQuaternion(streamed.quaternion).y).toBeCloseTo(0);
+    expect(world.workTree(streamed, true, actor)).toMatchObject({ kind: 'cut', total: felled.total });
+    const first = world.workTree(streamed, false, actor);
+    expect(first).toMatchObject({ kind: 'collected', amount: 3, remaining: felled.total - 3 });
+    const partial = world.treeHarvestSnapshot();
+    world.dispose();
+
+    const reloaded = new World(1847, 1);
+    reloaded.restoreTreeHarvest(partial);
+    reloaded.updateChunks(location.x, location.z, true);
+    const logs = reloaded.group.children.find(object => object.userData.resourceId === id)!;
+    expect(reloaded.treeHarvestState(logs)).toEqual(partial[id]);
+    let collected = 3;
+    while (true) {
+      const result = reloaded.workTree(logs, false, actor);
+      if (!result || result.kind !== 'collected') throw new Error('Expected collectible wood');
+      collected += result.amount;
+      if (!result.remaining) break;
+    }
+    expect(collected).toBe(felled.total);
+    expect(reloaded.workTree(logs, false, actor)).toBeUndefined();
+    expect(reloaded.treeHarvestSnapshot()).not.toHaveProperty(id);
+    expect(reloaded.depletedSnapshot()).toContain(id);
+    reloaded.updateChunks(location.x + 150, location.z + 150, true);
+    reloaded.updateChunks(location.x, location.z, true);
+    expect(reloaded.group.children.some(object => object.userData.resourceId === id)).toBe(false);
+    reloaded.dispose();
+  });
+
+  it('restores worked trees rather than regenerated stones after terrain edits', () => {
+    const world = new World(1847, 1);
+    world.updateChunks(-999_996, 4_500_000, true);
+    const id = '-999996,4500000';
+    const tree = world.group.children.find(object => object.userData.resourceId === id)!;
+    expect(tree.userData.resource).toBe('wood');
+    const position = { ...world.resourceLocation(tree) };
+    for (let i = 0; i < 3; i++) world.workTree(tree, true, position);
+    world.animate(0, 0, 1.6);
+    for (let i = 0; i < 2; i++) world.workTree(tree, true, position);
+    expect(world.workTree(tree, false, position)).toMatchObject({ kind: 'collected', amount: 3 });
+    const harvest = world.treeHarvestSnapshot();
+    expect(harvest[id]).toMatchObject({ phase: 'logs' });
+    for (let i = 0; i < 10 && world.heightAt(position.x, position.z) > 0.35; i++) {
+      world.editTerrain(position.x, position.z, 3, 'lower');
+    }
+    expect(world.heightAt(position.x, position.z)).toBeLessThanOrEqual(0.35);
+
+    const restored = new World(1847, 1);
+    restored.restore(world.snapshot());
+    restored.updateChunks(position.x, position.z, true);
+    expect(restored.group.children.find(object => object.userData.resourceId === id)?.userData.resource).toBe('stone');
+    const frame = new PlanetTangentFrame(position);
+    restored.setTangentFrame(frame);
+    restored.restoreTreeHarvest(harvest);
+    const rebuilt = restored.group.children.find(object => object.userData.resourceId === id)!;
+    expect(rebuilt.userData.resource).toBe('wood');
+    expect(restored.treeHarvestState(rebuilt)).toEqual(harvest[id]);
+    expect(rebuilt.position.x).toBeCloseTo(frame.toLocal(position).x, 4);
+    expect(rebuilt.position.z).toBeCloseTo(frame.toLocal(position).z, 4);
+    const collected = restored.workTree(rebuilt, false, position);
+    expect(collected).toMatchObject({ kind: 'collected' });
+    if (!collected || collected.kind !== 'collected') throw new Error('Expected collectible timber');
+    expect(restored.depletedSnapshot().includes(id)).toBe(collected.remaining === 0);
+    world.dispose();
+    restored.dispose();
+  });
+
+  it('gives a larger mature tree substantially more finite timber than a small tree', () => {
+    const world = new World(1847, 1);
+    const trees = world.group.children.filter(object => object.userData.resource === 'wood');
+    const adult = trees.find(object => object.userData.natureMature && object.scale.x > 1)!;
+    const small = trees.find(object => !object.userData.natureMature && object.scale.x < 1)!;
+    expect(adult).toBeDefined();
+    expect(small).toBeDefined();
+    const fell = (tree: THREE.Object3D) => {
+      const position = world.resourceLocation(tree);
+      world.workTree(tree, true, position);
+      world.workTree(tree, true, position);
+      const result = world.workTree(tree, true, position);
+      if (!result || result.kind !== 'felled') throw new Error('Expected a felled tree');
+      return result.total;
+    };
+    expect(fell(adult)).toBeGreaterThan(fell(small) * 1.5);
+    world.dispose();
+  });
   it('supports bounded terrain edits and undo', () => {
     const world = new World(1847, 1);
     const before = world.heightAt(0, 0);
@@ -104,6 +287,25 @@ describe('procedural world', () => {
     expect(reloaded).toBeDefined();
     reloaded.getMatrixAt(0, another);
     expect(another.elements).toEqual(original.elements);
+    world.dispose();
+  });
+
+  it('targets the nearest point of a fallen trunk rather than always its stump', () => {
+    const world = new World(1847, 1);
+    const tree = world.group.children.find(object => object.userData.resource === 'wood')!;
+    const location = world.resourceLocation(tree);
+    const actor = { x: location.x - 1, z: location.z };
+    world.workTree(tree, true, actor);
+    world.workTree(tree, true, actor);
+    const felled = world.workTree(tree, true, actor);
+    expect(felled?.kind).toBe('felled');
+    world.animate(0, 0, 1.6);
+    const besideTrunk = { x: location.x + 1.2, z: location.z + 0.8 };
+    const result = world.workTree(tree, true, besideTrunk);
+    expect(result?.kind).toBe('sawing');
+    if (!result || result.kind !== 'sawing') throw new Error('Expected to saw the fallen trunk');
+    expect(result.position.x).toBeCloseTo(location.x + 1.2, 1);
+    expect(result.position.z).toBeCloseTo(location.z, 1);
     world.dispose();
   });
 

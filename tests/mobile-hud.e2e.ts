@@ -205,6 +205,7 @@ test('captures and checks mobile HUD gameplay and expanded panels', async ({ pag
       await page.locator(`#${tool}Exit`).click();
     }
 
+    await page.locator('#toolHubButton').click();
     await page.locator('#inventoryButton').click();
     await expect(page.locator('#craftPanel')).toBeVisible();
     await expect(page.locator('#toast')).toBeHidden();
@@ -217,7 +218,7 @@ test('captures and checks mobile HUD gameplay and expanded panels', async ({ pag
     await expectInsideViewport(page, '#closeCraft', viewport);
     await page.locator('#closeCraft').click();
 
-    await page.locator('#atlasButton').click();
+    await page.locator('#minimap').click();
     await expect(page.locator('#atlasPanel')).toBeVisible();
     await expect(page.locator('#toast')).toBeHidden();
     await expectInsideViewport(page, '#atlasPanel', viewport);

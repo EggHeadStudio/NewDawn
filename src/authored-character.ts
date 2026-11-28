@@ -3,7 +3,8 @@ import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { clone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import type { CharacterAppearance } from './appearance';
 
-type Action = 'chop' | 'mine' | 'build' | 'attack' | 'hurt' | undefined;
+type Action = 'chop' | 'mine' | 'build' | 'gather' | 'attack' | 'hurt' | 'saw' | undefined;
+type HeldTool = 'chop' | 'mine' | 'weapon' | 'stick' | 'saw';
 type Avatar = {
   disposed: boolean;
   mixers: THREE.AnimationMixer[];
@@ -12,11 +13,16 @@ type Avatar = {
   materials: Set<THREE.Material>;
   skeletons: Set<THREE.Skeleton>;
   tools: Map<string, THREE.Object3D>;
+  backpackVisible: boolean;
+  backpack?: THREE.Object3D;
+  sawRig?: { upper: THREE.Object3D; lower: THREE.Object3D; hand: THREE.Object3D; rest: THREE.Quaternion };
+  sawTime: number;
 };
 
 const loader = new GLTFLoader();
 const cache = new Map<string, Promise<GLTF>>();
 const assetBase = `${import.meta.env.BASE_URL}assets/characters/quaternius/`;
+let backpackAsset: Promise<GLTF> | undefined;
 
 function load(name: string) {
   let pending = cache.get(name);
@@ -30,12 +36,77 @@ function load(name: string) {
   return pending;
 }
 
+function loadBackpack() {
+  if (!backpackAsset) {
+    backpackAsset = loader.loadAsync(`${import.meta.env.BASE_URL}assets/characters/equipment/hiking-backpack.glb`)
+      .catch(error => {
+        backpackAsset = undefined;
+        throw error;
+      });
+  }
+  return backpackAsset;
+}
+
+export function visibleCharacterTool(action: Action, selected: HeldTool | null): HeldTool | null {
+  if (action === 'chop' || action === 'mine' || action === 'saw') return action;
+  if (action === 'build') return 'chop';
+  return selected;
+}
+
 export function authoredAnimation(movement: number, running: boolean, action: Action, carrying: boolean) {
   if (action === 'hurt') return 'Hit_Chest';
+  if (action === 'saw') return 'Fixing_Kneeling';
   if (action === 'attack' || action === 'chop' || action === 'mine') return 'Sword_Attack';
-  if (action === 'build') return 'PickUp_Table';
+  if (action === 'build' || action === 'gather') return 'PickUp_Table';
   if (carrying) return movement > 0.1 ? 'Walk_Loop' : 'Idle_Loop';
   return movement > 0.1 ? (running ? 'Sprint_Loop' : 'Walk_Loop') : 'Idle_Loop';
+}
+
+export function poseSawArm(upper: THREE.Object3D, lower: THREE.Object3D, hand: THREE.Object3D,
+  saw: THREE.Object3D, target: THREE.Vector3, stroke: number) {
+  const shoulder = upper.getWorldPosition(new THREE.Vector3());
+  const elbow = lower.getWorldPosition(new THREE.Vector3());
+  const wrist = hand.getWorldPosition(new THREE.Vector3());
+  const upperLength = shoulder.distanceTo(elbow);
+  const lowerLength = elbow.distanceTo(wrist);
+  const towardCut = target.clone().sub(shoulder);
+  if (upperLength < 0.001 || lowerLength < 0.001 || towardCut.lengthSq() < 0.000001) return;
+  const desired = target.clone().addScaledVector(towardCut.normalize(), -(0.36 + stroke * 0.07));
+  const reach = desired.clone().sub(shoulder);
+  const distance = Math.min(upperLength + lowerLength - 0.001, Math.max(Math.abs(upperLength - lowerLength) + 0.001, reach.length()));
+  if (reach.lengthSq() < 0.000001) return;
+  const direction = reach.normalize();
+  const along = (upperLength ** 2 - lowerLength ** 2 + distance ** 2) / (2 * distance);
+  const bend = elbow.clone().sub(shoulder);
+  bend.addScaledVector(direction, -bend.dot(direction));
+  if (bend.lengthSq() < 0.000001) {
+    bend.set(0, 1, 0).addScaledVector(direction, -direction.y);
+    if (bend.lengthSq() < 0.000001) bend.set(1, 0, 0);
+  }
+  const elbowGoal = shoulder.clone().addScaledVector(direction, along)
+    .addScaledVector(bend.normalize(), Math.sqrt(Math.max(0, upperLength ** 2 - along ** 2)));
+  const handGoal = shoulder.clone().addScaledVector(direction, distance);
+  const align = (bone: THREE.Object3D, from: THREE.Vector3, to: THREE.Vector3) => {
+    const worldRotation = bone.getWorldQuaternion(new THREE.Quaternion());
+    const parentRotation = bone.parent?.getWorldQuaternion(new THREE.Quaternion()) ?? new THREE.Quaternion();
+    const turn = new THREE.Quaternion().setFromUnitVectors(from.normalize(), to.normalize());
+    bone.quaternion.copy(parentRotation.invert().multiply(turn).multiply(worldRotation));
+    bone.updateWorldMatrix(false, true);
+  };
+  align(upper, elbow.clone().sub(shoulder), elbowGoal.sub(shoulder));
+  const movedElbow = lower.getWorldPosition(new THREE.Vector3());
+  const movedWrist = hand.getWorldPosition(new THREE.Vector3());
+  align(lower, movedWrist.sub(movedElbow), handGoal.sub(movedElbow));
+
+  const bladeDirection = target.clone().sub(hand.getWorldPosition(new THREE.Vector3()));
+  if (bladeDirection.lengthSq() < 0.000001) return;
+  bladeDirection.normalize();
+  const bladeSide = new THREE.Vector3(0, 1, 0).addScaledVector(bladeDirection, -bladeDirection.y);
+  if (bladeSide.lengthSq() < 0.000001) bladeSide.set(1, 0, 0);
+  bladeSide.normalize();
+  const bladeNormal = bladeSide.clone().cross(bladeDirection).normalize();
+  const bladeRotation = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(bladeSide, bladeDirection, bladeNormal));
+  saw.quaternion.copy(hand.getWorldQuaternion(new THREE.Quaternion()).invert().multiply(bladeRotation));
 }
 
 function headOnly(model: GLTF, feminine: boolean) {
@@ -75,8 +146,10 @@ function loadHead(feminine: boolean) {
   return pending;
 }
 
-export function attachAuthoredCharacter(root: THREE.Group, appearance: CharacterAppearance, onError: (error: unknown) => void) {
-  const avatar: Avatar = { disposed: false, mixers: [], actions: new Map(), materials: new Set(), skeletons: new Set(), tools: new Map() };
+export function attachAuthoredCharacter(root: THREE.Group, appearance: CharacterAppearance, onError: (error: unknown) => void,
+  options: { backpack?: boolean; onBackpackError?: (error: unknown) => void } = {}) {
+  const avatar: Avatar = { disposed: false, mixers: [], actions: new Map(), materials: new Set(), skeletons: new Set(),
+    tools: new Map(), backpackVisible: true, sawTime: 0 };
   root.userData.authoredAvatar = avatar;
   const fallbackParts = [...root.children];
   const feminine = appearance.body === 'feminine';
@@ -94,7 +167,7 @@ export function attachAuthoredCharacter(root: THREE.Group, appearance: Character
   void Promise.all(requests).then(models => {
     if (avatar.disposed) return;
     const clips = models[2].animations;
-    const needed = ['Idle_Loop', 'Walk_Loop', 'Sprint_Loop', 'Sword_Attack', 'Hit_Chest', 'PickUp_Table'];
+    const needed = ['Idle_Loop', 'Walk_Loop', 'Sprint_Loop', 'Sword_Attack', 'Hit_Chest', 'PickUp_Table', 'Fixing_Kneeling'];
     for (const name of needed) if (!clips.some(clip => clip.name === name)) throw new Error(`Missing animation: ${name}`);
     const group = new THREE.Group();
     group.name = 'authored-character';
@@ -131,7 +204,29 @@ export function attachAuthoredCharacter(root: THREE.Group, appearance: Character
       if (index === 1) {
         const hand = model.getObjectByName('hand_r');
         if (!hand) throw new Error('Character outfit is missing the right hand bone');
-        for (const kind of ['chop', 'mine', 'weapon', 'stick']) {
+        if (options.backpack) {
+          const back = model.getObjectByName('spine_02');
+          const reportError = options.onBackpackError ?? (error => console.error('Could not load backpack art', error));
+          if (!back) reportError(new Error('Character outfit is missing the backpack attachment bone'));
+          else void loadBackpack().then(asset => {
+            if (avatar.disposed) return;
+            const backpack = asset.scene.clone(true);
+            backpack.name = 'survivor-backpack';
+            backpack.position.set(0, 0.13, -0.32);
+            backpack.scale.setScalar(0.35);
+            backpack.visible = avatar.backpackVisible;
+            backpack.traverse(object => {
+              object.userData.authoredShared = true;
+              if (object instanceof THREE.Mesh) {
+                object.castShadow = true;
+                object.receiveShadow = true;
+              }
+            });
+            avatar.backpack = backpack;
+            back.add(backpack);
+          }).catch(error => { if (!avatar.disposed) reportError(error); });
+        }
+        for (const kind of ['chop', 'mine', 'weapon', 'stick', 'saw']) {
           const fallback = root.getObjectByName(`tool-${kind}`);
           if (!fallback) continue;
           const tool = fallback.clone();
@@ -141,6 +236,10 @@ export function attachAuthoredCharacter(root: THREE.Group, appearance: Character
           hand.add(tool);
           avatar.tools.set(kind, tool);
         }
+        const upper = model.getObjectByName('upperarm_r');
+        const lower = model.getObjectByName('lowerarm_r');
+        const saw = avatar.tools.get('saw');
+        if (upper && lower && saw) avatar.sawRig = { upper, lower, hand, rest: saw.quaternion.clone() };
       }
       group.add(model);
       const mixer = new THREE.AnimationMixer(model);
@@ -165,20 +264,38 @@ export function attachAuthoredCharacter(root: THREE.Group, appearance: Character
   });
 }
 
-export function updateAuthoredCharacter(root: THREE.Group, dt: number, movement: number, running: boolean, action: Action, carrying: boolean, attackTool: 'weapon' | 'chop' | 'stick' | null = 'weapon') {
+export function setAuthoredBackpackVisible(root: THREE.Group, visible: boolean) {
+  const avatar = root.userData.authoredAvatar as Avatar | undefined;
+  if (!avatar || avatar.disposed) return;
+  avatar.backpackVisible = visible;
+  if (avatar.backpack) avatar.backpack.visible = visible;
+}
+
+export function updateAuthoredCharacter(root: THREE.Group, dt: number, movement: number, running: boolean, action: Action, carrying: boolean, attackTool: 'weapon' | 'chop' | 'stick' | 'saw' | null = null, sawTarget?: THREE.Vector3) {
   const avatar = root.userData.authoredAvatar as Avatar | undefined;
   if (!avatar || avatar.disposed || !avatar.mixers.length) return false;
   const name = authoredAnimation(movement, running, action, carrying);
   for (const [kind, tool] of avatar.tools) {
     tool.visible = root.userData.enemy ? kind === 'weapon'
-      : kind === (action === 'attack' ? attackTool : action === 'build' ? 'chop' : action);
+      : kind === visibleCharacterTool(action, attackTool);
   }
   if (name !== avatar.current) {
     if (avatar.current) avatar.actions.get(avatar.current)?.forEach(previous => previous.fadeOut(0.16));
-    avatar.actions.get(name)?.forEach(next => next.reset().setEffectiveWeight(1).fadeIn(0.16).play());
+    avatar.actions.get(name)?.forEach(next => next.reset().setEffectiveTimeScale(name === 'Fixing_Kneeling' ? 2 : 1)
+      .setEffectiveWeight(1).fadeIn(0.16).play());
     avatar.current = name;
   }
   avatar.mixers.forEach(mixer => mixer.update(dt));
+  const saw = avatar.tools.get('saw');
+  if (action === 'saw' && sawTarget && saw && avatar.sawRig) {
+    avatar.sawTime += dt;
+    const stroke = Math.sin(avatar.sawTime * 15);
+    const target = root.parent ? root.parent.localToWorld(sawTarget.clone()) : sawTarget.clone();
+    poseSawArm(avatar.sawRig.upper, avatar.sawRig.lower, avatar.sawRig.hand, saw, target, stroke);
+  } else {
+    avatar.sawTime = 0;
+    if (saw && avatar.sawRig) saw.quaternion.copy(avatar.sawRig.rest);
+  }
   return true;
 }
 

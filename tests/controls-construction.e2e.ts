@@ -200,7 +200,7 @@ test('makes glass in the furnace and installs it into a wall replacement', async
   await page.locator('#continueGame').click();
   await expect(page.locator('#pauseButton')).toBeVisible();
   expect((await readSave(page)).structures).toEqual(built.structures);
-  expect((await readSave(page)).version).toBe(12);
+  expect((await readSave(page)).version).toBe(13);
 });
 
 test('a window without glass is rejected without consuming wood', async ({ page }) => {

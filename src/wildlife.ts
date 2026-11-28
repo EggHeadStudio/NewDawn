@@ -1,9 +1,11 @@
 import { biomeAt, seededNoise, terrainHeight } from './world';
 import { geographicBearing, geographicDistanceMeters, type GeographicPosition } from './geography';
 import { movePlanetPosition, planetDistanceMeters, planetPositionToGeographic, PLANET_WIDTH } from './planet';
+import type { WildlifeCollision } from './wildlife-collision';
 
 export type Species = 'deer' | 'rabbit' | 'wolf' | 'bird' | 'bear' | 'snake' | 'squirrel' | 'reindeer' | 'moose' | 'cow' | 'sheep' | 'fox';
 export type AnimalBehavior = 'wander' | 'rest' | 'flee' | 'chase' | 'fly';
+type PredatorSpecies = Extract<Species, 'wolf' | 'fox' | 'bear'>;
 export interface AnimalState {
   id: string;
   species: Species;
@@ -20,6 +22,10 @@ export interface AnimalState {
   decisions: number;
 }
 type ActorPosition = { x: number; z: number; geographic?: GeographicPosition };
+
+function isPredator(species: Species): species is PredatorSpecies {
+  return species === 'wolf' || species === 'fox' || species === 'bear';
+}
 
 function geographicPosition(position: ActorPosition) {
   return position.geographic ?? planetPositionToGeographic(position.x, position.z);
@@ -115,8 +121,9 @@ export function isWildlifeState(value: unknown): value is AnimalState[] {
 export function updateWildlife(
   animals: AnimalState[], dt: number, seed: number, player: ActorPosition,
   heightAt: (x: number, z: number) => number,
-  damagePlayer: (damage: number) => void,
+  damagePlayer: (damage: number, predator: PredatorSpecies) => void,
   move: typeof movePlanetPosition = movePlanetPosition,
+  collision?: WildlifeCollision,
 ) {
   for (const animal of animals) {
     if (animal.health <= 0) continue;
@@ -126,7 +133,8 @@ export function updateWildlife(
     const playerDistance = distanceBetween(player, animal);
     let target: ActorPosition | undefined;
     let flee = false;
-    if (animal.species === 'wolf' || animal.species === 'fox' || animal.species === 'bear') {
+    let movementLimit = Infinity;
+    if (isPredator(animal.species)) {
       const prey = animals.filter(other => other.health > 0 && (
         animal.species === 'bear' ? ['deer', 'rabbit', 'sheep', 'squirrel'].includes(other.species)
           : ['deer', 'rabbit', 'sheep', 'squirrel'].includes(other.species)))
@@ -137,14 +145,24 @@ export function updateWildlife(
       if (target) {
         animal.behavior = 'chase';
         const distance = distanceBetween(animal, target);
-        if (distance < 1.1 && animal.attackTimer === 0) {
-          if (target === player) damagePlayer(8);
+        const attackReach = animal.species === 'bear' ? 1.5 : 1.1;
+        let separation = animal.species === 'bear' ? 1.3 : 0.9;
+        let attackAllowed = animal.attackTimer === 0 && distance < attackReach;
+        if (collision) {
+          const attackerBody = collision.animalBody(animal);
+          const targetBody = target === player ? collision.playerBody() : collision.animalBody(prey!);
+          separation = Math.max(separation, attackerBody.radius + targetBody.radius + 0.01);
+          attackAllowed = animal.attackTimer === 0 && collision.canAttack(attackerBody, targetBody, attackReach).allowed;
+        }
+        movementLimit = Math.max(0, distance - separation);
+        if (attackAllowed) {
+          if (target === player) damagePlayer(8, animal.species);
           else if (prey) prey.health -= 1;
           animal.attackTimer = 2;
         }
       } else if (distanceBetween(animal, { x: animal.homeX, z: animal.homeZ }) > 12) target = { x: animal.homeX, z: animal.homeZ };
     } else {
-      const threat = animals.find(other => other.species === 'wolf' && other.health > 0 && distanceBetween(other, animal) < 5);
+      const threat = animals.find(other => isPredator(other.species) && other.health > 0 && distanceBetween(other, animal) < 5);
       if (playerDistance < 4 || threat) {
         target = playerDistance < 4 ? player : threat;
         flee = true;
@@ -161,17 +179,50 @@ export function updateWildlife(
     if (target) {
       animal.heading = bearingBetween(animal, target) * Math.PI / 180 + (flee ? Math.PI : 0);
     }
-    if (animal.behavior !== 'rest') {
-      const speed = speeds[animal.species] * (animal.behavior === 'wander' ? 0.35 : 1);
-      const next = move(animal, animal.heading * 180 / Math.PI, speed * dt, animal.geographic);
-      if (distanceBetween(next, { x: animal.homeX, z: animal.homeZ }) > 46) {
+    const speed = speeds[animal.species] * (animal.behavior === 'wander' ? 0.35 : 1);
+    const step = animal.behavior === 'rest' ? 0 : Math.min(speed * dt, movementLimit);
+    // A resting or already-at-reach animal can still separate from an old
+    // save overlap. No overlap means no movement and no changed behavior.
+    if (step > 0 || (collision && dt > 0)) {
+      const next = step > 0 ? move(animal, animal.heading * 180 / Math.PI, step, animal.geographic)
+        : { x: animal.x, z: animal.z, geographic: animal.geographic };
+      if (collision) {
+        const home = { x: animal.homeX, z: animal.homeZ };
+        const previousHomeDistance = distanceBetween(animal, home);
+        const previousGround = heightAt(animal.x, animal.z);
+        const result = collision.moveBody({
+          body: collision.animalBody(animal),
+          to: collision.animalBody(animal, next).pose,
+          dt,
+          recoveryDistance: speed * dt,
+          detour: step > 0,
+          canOccupy: point => {
+            const homeDistance = distanceBetween(point, home);
+            const ground = heightAt(point.x, point.z);
+            // Legacy saves may already be outside the home radius or on wet
+            // ground; permit non-worsening steps back toward a legal habitat.
+            return (previousHomeDistance > 46 ? homeDistance <= previousHomeDistance + 1e-5 : homeDistance <= 46)
+              && (previousGround <= 0.1 ? ground >= previousGround - 1e-5 : ground > 0.1);
+          },
+        });
+        if (result.status !== 'incomplete') {
+          const position = result.pose.position;
+          if (result.travelledM > 1e-5 && result.status !== 'clear') {
+            animal.heading = bearingBetween(animal, position) * Math.PI / 180;
+          } else if (step > 0 && (result.status === 'blocked' || result.status === 'unresolved') && !target) {
+            animal.heading += Math.PI * 0.6;
+          }
+          animal.x = position.x;
+          animal.z = position.z;
+          animal.geographic = { ...geographicPosition(position), altitude: heightAt(position.x, position.z) };
+        }
+      } else if (distanceBetween(next, { x: animal.homeX, z: animal.homeZ }) > 46) {
         animal.heading += Math.PI * 0.6;
       } else if (heightAt(next.x, next.z) > 0.1) {
         animal.x = next.x;
         animal.z = next.z;
         animal.geographic = { ...next.geographic, altitude: heightAt(next.x, next.z) };
-      }
-      else animal.heading += Math.PI * 0.6;
+      } else animal.heading += Math.PI * 0.6;
     }
   }
   for (let i = animals.length - 1; i >= 0; i--) {

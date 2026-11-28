@@ -152,6 +152,7 @@ test('places a torch post and lights, extinguishes and reloads it', async ({ pag
   await save(page);
   await worldRecord(page, 'resources');
   await continueWorld(page);
+  await page.locator('#toolHubButton').click();
   await page.locator('#inventoryButton').click();
   await page.locator('#craftTorch').click();
   await page.locator('#equipTorch').click();
@@ -235,6 +236,7 @@ for (const viewport of [
       await continueWorld(page);
       await page.waitForTimeout(1000);
       const before = !viewport.touch ? await page.locator('#game').screenshot() : undefined;
+      await page.locator('#toolHubButton').click();
       await page.locator('#inventoryButton').click();
       await page.locator('#craftTorch').click();
       await page.locator('#equipTorch').click();
@@ -252,6 +254,7 @@ for (const viewport of [
       expect(crafted.minerals.coal).toBe(1);
       expect(crafted.torch).toEqual({ crafted: true, equipped: true, lit: true });
       await continueWorld(page);
+      await page.locator('#toolHubButton').click();
       await page.locator('#inventoryButton').click();
       await expect(page.locator('#torchStatus')).toContainText('burning');
       await page.locator('#equipTorch').click();
@@ -268,6 +271,7 @@ for (const viewport of [
       await save(page);
       await worldRecord(page, 'resources');
       await continueWorld(page);
+      await page.locator('#toolHubButton').tap();
       await page.locator('#inventoryButton').tap();
       await page.locator('#craftTorch').tap();
       await page.locator('#equipTorch').tap();

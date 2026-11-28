@@ -1,0 +1,7 @@
+"Gray Wolf" by vinish.dev (https://vinish.dev/free-3d-models/),
+licensed under Creative Commons Attribution 4.0 International:
+https://creativecommons.org/licenses/by/4.0/
+
+Source: https://vinish.dev/free-3d-models/wolves-and-foxes
+Changes: geometry simplified and animation clips renamed to lowercase.
+The original is available at the source above. No endorsement is implied.

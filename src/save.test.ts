@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isSaveData } from './save';
+import { isSaveData, toolsFromSave } from './save';
 import { defaultAppearance } from './appearance';
 import { emptyMinerals } from './economy';
 import { PLANET_WIDTH, planetPositionToGeographic } from './planet';
@@ -23,6 +23,13 @@ describe('saved worlds', () => {
     expect(isSaveData({ ...oldSave(), ...identity, version: 4, wildlife: [] })).toBe(true);
     expect(isSaveData({ ...oldSave(), ...identity, version: 5, wildlife: [] })).toBe(true);
     expect(isSaveData({ ...oldSave(), ...identity, version: 6, wildlife: [], player: { x: 500, z: -200 } })).toBe(true);
+  });
+  it('accepts an optional finite rover heading without invalidating old saves', () => {
+    const save = oldSave();
+    expect(isSaveData(save)).toBe(true);
+    expect(isSaveData({ ...save, vehicle: { ...save.vehicle, yaw: -1.2 } })).toBe(true);
+    expect(isSaveData({ ...save, vehicle: { ...save.vehicle, yaw: Infinity } })).toBe(false);
+    expect(isSaveData({ ...save, vehicle: { ...save.vehicle, yaw: null } })).toBe(false);
   });
   it('rejects malformed, unsafe, and unsupported saves', () => {
     expect(isSaveData({ ...oldSave(), version: 8 })).toBe(false);
@@ -135,5 +142,54 @@ describe('saved worlds', () => {
     expect(isSaveData(withNpc)).toBe(true);
     expect(isSaveData({ ...withNpc, planetPositions: { ...withNpc.planetPositions,
       npc: planetPositionToGeographic(PLANET_WIDTH / 4, 2) } })).toBe(false);
+  });
+
+  it('validates version 13 timber progress and carried quantities without accepting a downgraded saw', () => {
+    const save = { ...oldSave(), version: 13, appearance: defaultAppearance(), playerName: 'Survivor',
+      npcAppearanceSeed: 53917, wildlife: [], player: { x: 0, y: 1, z: 5 }, structures: [],
+      minerals: emptyMinerals(), mining: {}, ingots: { iron: 0, copper: 0, glass: 0 }, ironPickaxe: false,
+      planetPositions: { player: planetPositionToGeographic(0, 5), vehicle: planetPositionToGeographic(8, 4) },
+      selectedWeapon: 'saw', depleted: ['0,3'],
+      treeHarvest: { '3,3': { phase: 'standing', progress: 2 },
+        '6,3': { phase: 'fallen', progress: 1, total: 12, direction: 0.5 },
+        '9,3': { phase: 'logs', remaining: 5, total: 12, direction: -0.5 } },
+      npcState: { recruited: true, job: 'wood', carrying: 'wood', carryingAmount: 2 } };
+    expect(isSaveData(save)).toBe(true);
+    expect(isSaveData({ ...save, version: 12 })).toBe(false);
+    expect(isSaveData({ ...save, version: 14 })).toBe(false);
+    expect(isSaveData({ ...save, treeHarvest: undefined })).toBe(false);
+    expect(isSaveData({ ...save, depleted: ['9,3'] })).toBe(false);
+    expect(isSaveData({ ...save, treeHarvest: { '3,3': { phase: 'standing', progress: 3 } } })).toBe(false);
+    expect(isSaveData({ ...save, treeHarvest: { '6,3': { phase: 'fallen', progress: 1, total: 12, direction: NaN } } })).toBe(false);
+    expect(isSaveData({ ...save, treeHarvest: { '9,3': { phase: 'logs', remaining: 13, total: 12, direction: 0 } } })).toBe(false);
+    expect(isSaveData({ ...save, npcState: { ...save.npcState, carryingAmount: undefined } })).toBe(false);
+    expect(isSaveData({ ...save, npcState: { ...save.npcState, carryingAmount: 4 } })).toBe(false);
+  });
+
+  it('accepts missing or boolean backpack equipment state and rejects malformed values', () => {
+    const legacy = oldSave();
+    expect(isSaveData(legacy)).toBe(true);
+    expect(isSaveData({ ...legacy, backpackEquipped: true })).toBe(true);
+    expect(isSaveData({ ...legacy, backpackEquipped: false })).toBe(true);
+    expect(isSaveData({ ...legacy, backpackEquipped: 'false' })).toBe(false);
+    expect(isSaveData({ ...legacy, backpackEquipped: null })).toBe(false);
+  });
+
+  it('preserves the previously free axe for legacy saves without duplicating crafted tools', () => {
+    const legacy = { tools: ['pickaxe'] as const };
+    expect(toolsFromSave({})).toEqual(['axe']);
+    expect(toolsFromSave({ tools: [...legacy.tools] })).toEqual(['pickaxe', 'axe']);
+    expect(toolsFromSave({ tools: ['axe', 'pickaxe'] })).toEqual(['axe', 'pickaxe']);
+    expect(toolsFromSave({ axeRequiresCrafting: true, tools: ['pickaxe'] })).toEqual(['pickaxe']);
+    expect(legacy.tools).toEqual(['pickaxe']);
+  });
+
+  it('validates the crafted-axe rule and rejects selecting an unowned axe in new saves', () => {
+    const legacy = oldSave();
+    expect(isSaveData({ ...legacy, selectedWeapon: 'axe' })).toBe(true);
+    expect(isSaveData({ ...legacy, axeRequiresCrafting: true, selectedWeapon: 'fists' })).toBe(true);
+    expect(isSaveData({ ...legacy, axeRequiresCrafting: true, selectedWeapon: 'axe' })).toBe(false);
+    expect(isSaveData({ ...legacy, axeRequiresCrafting: true, selectedWeapon: 'axe', tools: ['axe'] })).toBe(true);
+    expect(isSaveData({ ...legacy, axeRequiresCrafting: false })).toBe(false);
   });
 });

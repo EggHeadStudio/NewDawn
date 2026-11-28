@@ -48,6 +48,62 @@ describe('cached shelter', () => {
     expect(renderer.group.children).toHaveLength(0);
   });
 
+  it.each(['flat', 'gable'] as const)('renders an opaque %s roof until the occupied room fades', style => {
+    const pieces = house();
+    if (style === 'flat') delete pieces[4].roofShape;
+    const renderer = new ConstructionRenderer();
+    renderer.refresh(pieces);
+    const roof = renderer.group.children.find(child => child instanceof THREE.InstancedMesh
+      && child.userData.constructionKind === 'roof') as THREE.InstancedMesh;
+    const faded = renderer.group.children.find(child => child instanceof THREE.InstancedMesh
+      && child !== roof && child.geometry === roof.geometry) as THREE.InstancedMesh;
+    expect((roof.material as THREE.Material).transparent).toBe(false);
+    expect((roof.material as THREE.Material).depthWrite).toBe(true);
+    expect(roof.visible).toBe(true);
+    expect(faded.visible).toBe(false);
+    expect((faded.material as THREE.Material).transparent).toBe(true);
+    expect((faded.material as THREE.Material).depthWrite).toBe(false);
+
+    renderer.update(1, new THREE.Vector3(0, 2.2, 0), new THREE.Vector3(0, 8, 5));
+    expect(roof.geometry.getAttribute('instanceOpacity').getX(0)).toBeLessThan(0.3);
+    expect(roof.visible).toBe(false);
+    expect(faded.visible).toBe(true);
+    renderer.refresh(pieces);
+    const refreshed = renderer.group.children.find(child => child instanceof THREE.InstancedMesh
+      && child.userData.constructionKind === 'roof') as THREE.InstancedMesh;
+    const refreshedFaded = renderer.group.children.find(child => child instanceof THREE.InstancedMesh
+      && child !== refreshed && child.geometry === refreshed.geometry) as THREE.InstancedMesh;
+    expect(refreshed.visible).toBe(false);
+    expect(refreshedFaded.visible).toBe(true);
+    expect(Array.from(refreshedFaded.instanceMatrix.array)).toEqual(Array.from(refreshed.instanceMatrix.array));
+    renderer.update(2, new THREE.Vector3(4, 2.2, 0), new THREE.Vector3(4, 8, 5));
+    expect(refreshed.geometry.getAttribute('instanceOpacity').getX(0)).toBeGreaterThan(0.999);
+    expect(refreshed.visible).toBe(true);
+    expect(refreshedFaded.visible).toBe(false);
+    let disposed = false;
+    refreshed.geometry.addEventListener('dispose', () => { disposed = true; });
+    renderer.refresh([]);
+    expect(disposed).toBe(true);
+    expect(renderer.group.children).toHaveLength(0);
+  });
+
+  it('uses both roof passes when a batch contains an occupied and an unoccupied room', () => {
+    const first = house();
+    const second = house().map(piece => ({ ...piece, id: `${piece.id}-other`, x: piece.x + 6 }));
+    const renderer = new ConstructionRenderer();
+    renderer.refresh([...first, ...second]);
+    const roof = renderer.group.children.find(child => child instanceof THREE.InstancedMesh
+      && child.userData.constructionKind === 'roof' && child.count === 2) as THREE.InstancedMesh;
+    const faded = renderer.group.children.find(child => child instanceof THREE.InstancedMesh
+      && child !== roof && child.geometry === roof.geometry) as THREE.InstancedMesh;
+    renderer.update(1, new THREE.Vector3(0, 2.2, 0), new THREE.Vector3(0, 8, 5));
+    const opacity = roof.geometry.getAttribute('instanceOpacity');
+    expect(opacity.getX(0)).toBeLessThan(0.3);
+    expect(opacity.getX(1)).toBe(1);
+    expect(roof.visible).toBe(true);
+    expect(faded.visible).toBe(true);
+  });
+
   it('keeps an adjacent room opaque and does not fade a roof when the camera is below it', () => {
     const pieces = house();
     pieces.push(
@@ -83,6 +139,7 @@ describe('cached shelter', () => {
     const scene = new THREE.Scene();
     const precipitation = new Precipitation(scene);
     const points = scene.children[0] as THREE.Points;
+    const rain = scene.children[1] as THREE.LineSegments;
     const position = points.geometry.getAttribute('position');
     position.setXYZ(0, 0, 1, 0);
     position.setXYZ(1, 5, 1, 0);
@@ -92,8 +149,13 @@ describe('cached shelter', () => {
     for (const weather of ['Rain', 'Snow'] as const) {
       precipitation.update(weather, new THREE.Vector3(0, 2.2, 0), 0, index);
       const visibility = points.geometry.getAttribute('particleVisibility');
-      expect(points.visible).toBe(true);
       expect([visibility.getX(0), visibility.getX(1), visibility.getX(2)]).toEqual([0, 1, 1]);
+      expect(points.visible).toBe(weather === 'Snow');
+      expect(rain.visible).toBe(weather === 'Rain');
+      if (weather === 'Rain') {
+        const opacity = rain.geometry.getAttribute('rainOpacity');
+        expect([opacity.getX(0), opacity.getX(2), opacity.getX(4)]).toEqual([0, 1, 1]);
+      }
     }
   });
 });

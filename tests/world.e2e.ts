@@ -23,6 +23,7 @@ async function waitForNature(page: Page) {
 
 type SavedWorld = { version: number; seed: number; player: { x: number; z: number }; resources: { wood: number };
   terrain: Record<string, number>; npcState: { recruited: boolean }; buildings: Array<{ kind: string; x: number; z: number }>;
+  structures: Array<{ id: string; kind: string; roofShape?: unknown }>;
   minerals: { ironOre: number; sand: number; coal: number }; ingots: { iron: number; copper: number; glass?: number };
   mining: Record<string, number>; planetPositions?: { player: { latitude: number; longitude: number };
     vehicle: { latitude: number; longitude: number }; npc?: { latitude: number; longitude: number } } };
@@ -55,6 +56,12 @@ test('migrates version 8 economy without granting glass and preserves a backup',
       get.onsuccess = () => {
         const data = get.result;
         data.version = 8;
+        delete data.roofStyle;
+        delete data.roofAxis;
+        data.structures = [
+          { id: 'legacy-floor', kind: 'floor', x: 20, z: 20, y: 0, level: 0, rotation: 0, open: false },
+          { id: 'legacy-roof', kind: 'roof', x: 20, z: 20, y: 0, level: 0, rotation: 0, open: false, automatic: true },
+        ];
         data.minerals.ironOre = 5;
         data.minerals.sand = 3;
         data.minerals.coal = 2;
@@ -69,13 +76,17 @@ test('migrates version 8 economy without granting glass and preserves a backup',
   await page.reload();
   await page.locator('#continueGame').click();
   await expect(page.locator('#pauseButton')).toBeVisible();
+  await expect(page.locator('#roofStyle')).toHaveValue('flat');
   const backup = await readRecord(page, 'pre-glass-backup');
   expect(backup).toMatchObject({ version: 8, ingots: { iron: 4, copper: 2 },
     minerals: { ironOre: 5, sand: 3, coal: 2 }, mining: { '4,6': 2 } });
   expect(backup.ingots.glass).toBeUndefined();
+  expect(backup.structures.find(piece => piece.id === 'legacy-roof')?.roofShape).toBeUndefined();
   await save(page);
-  expect(await readRecord(page, 'primary')).toMatchObject({ version: 12, ingots: { iron: 4, copper: 2, glass: 0 },
+  const migrated = await readRecord(page, 'primary');
+  expect(migrated).toMatchObject({ version: 13, ingots: { iron: 4, copper: 2, glass: 0 },
     minerals: { ironOre: 5, sand: 3, coal: 2 }, mining: { '4,6': 2 } });
+  expect(migrated.structures).toEqual(backup.structures);
 });
 
 test('preserves a legacy settlement and walks beyond the old island', async ({ page }) => {
@@ -95,6 +106,8 @@ test('preserves a legacy settlement and walks beyond the old island', async ({ p
         const data = get.result;
         data.version = 5;
         delete data.structures;
+        delete data.roofStyle;
+        delete data.roofAxis;
         data.resources.wood = 17;
         data.terrain = { '-6,-6': -0.35 };
         data.buildings = [{ kind: 'storage', x: -10, z: -10, y: 1, rotation: 0, charge: 0 }];
@@ -130,7 +143,7 @@ test('preserves a legacy settlement and walks beyond the old island', async ({ p
   expect(x).toBeGreaterThan(54);
   await save(page);
   const traveled = await readRecord(page, 'primary');
-  expect(traveled).toMatchObject({ version: 12, resources: { wood: 17 }, terrain: { '-6,-6': -0.35 },
+  expect(traveled).toMatchObject({ version: 13, resources: { wood: 17 }, terrain: { '-6,-6': -0.35 },
     npcState: { recruited: true }, buildings: [{ kind: 'storage', x: -10, z: -10 }] });
   expect(traveled.player.x).toBeGreaterThan(48);
   await page.reload();
@@ -261,7 +274,7 @@ test(`moves and saves at real meter scale at ${latitude} degrees latitude`, asyn
   await page.keyboard.up('w');
   await save(page);
   const moved = await readRecord(page, 'primary');
-  expect(moved.version).toBe(12);
+  expect(moved.version).toBe(13);
   expect(moved.planetPositions).toBeDefined();
   const distance = geographicDistanceMeters(footStart, moved.planetPositions!.player);
   expect(distance).toBeGreaterThan(2);
@@ -317,7 +330,7 @@ test('Mira moves and reloads in canonical meters at high latitude', async ({ pag
         data.vehicle = vehicle;
         data.planetPositions.vehicle = vehicleGeo;
         data.buildings = [{ kind: 'storage', x: target.x, z: target.z, y: 1, rotation: 0, charge: 0 }];
-        data.npcState = { recruited: true, job: 'wood', carrying: 'wood' };
+        data.npcState = { recruited: true, job: 'wood', carrying: 'wood', carryingAmount: 3 };
         store.put(data, 'primary');
       };
       tx.oncomplete = () => { db.close(); resolve(); };

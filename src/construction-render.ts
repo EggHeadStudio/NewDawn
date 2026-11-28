@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { FLOOR_HEIGHT, type PieceKind, type StructuralPiece } from './construction';
 import { ShelterIndex } from './shelter';
 import { occludingPieces, type OcclusionBatch } from './construction-occlusion';
@@ -7,6 +8,8 @@ import { CHUNK_SIZE, planetPositionToGeographic, PlanetTangentFrame } from './pl
 import { geographicDistanceMeters, transportBearing } from './geography';
 
 type Part = { offset: [number, number, number]; size: [number, number, number]; color: string; opacity?: number };
+// Match the shader's float32 cutoff so neither pass drops a boundary value.
+const opaqueThreshold = Math.fround(0.999);
 const parts: Record<PieceKind, Part[]> = {
   floor: [{ offset: [0, 0.09, 0], size: [1.96, 0.18, 1.96], color: '#91663e' }],
   wall: [{ offset: [0, 1.15, 0], size: [1.96, 2.3, 0.16], color: '#a6784d' }],
@@ -44,41 +47,100 @@ export function createPieceGhost(kind: PieceKind) {
 function pitchedGeometry(piece: StructuralPiece, sides: boolean[]) {
   const { axis, heights } = piece.roofShape!;
   const positions: number[] = [];
+  const uvs: number[] = [];
   const vertex = (cross: number, along: number, height: number) =>
     axis === 0 ? [cross, height, along] : [along, height, cross];
-  const triangle = (a: number[], b: number[], c: number[]) => positions.push(...a, ...b, ...c);
-  const quad = (a: number[], b: number[], c: number[], d: number[]) => { triangle(a, b, c); triangle(a, c, d); };
+  const quad = (a: number[], b: number[], c: number[], d: number[], projection: 'roof' | 'cross' | 'along') => {
+    // Swapping the horizontal axes reflects the geometry, so its winding must reverse.
+    for (const point of axis === 0 ? [a, b, c, a, c, d] : [a, c, b, a, d, c]) {
+      const cross = axis === 0 ? point[0] : point[2];
+      const along = axis === 0 ? point[2] : point[0];
+      positions.push(...point);
+      if (projection === 'roof') uvs.push((along + 1) / 2, (cross + 1) / 2);
+      else uvs.push(((projection === 'cross' ? cross : along) + 1) / 2, (point[1] + 0.12) / 2);
+    }
+  };
   for (let i = 0; i < 2; i++) {
     const left = i - 1, right = i;
     const a = vertex(left, -1, heights[i]), b = vertex(right, -1, heights[i + 1]);
     const c = vertex(right, 1, heights[i + 1]), d = vertex(left, 1, heights[i]);
-    quad(a, d, c, b);
+    quad(a, d, c, b, 'roof');
     const underside = (point: number[]) => [point[0], point[1] - 0.12, point[2]];
-    quad(underside(a), underside(b), underside(c), underside(d));
-    if (sides[0]) quad(vertex(left, -1, -0.12), a, b, vertex(right, -1, -0.12));
-    if (sides[1]) quad(vertex(right, 1, -0.12), c, d, vertex(left, 1, -0.12));
+    quad(underside(a), underside(b), underside(c), underside(d), 'roof');
+    if (sides[0]) quad(vertex(left, -1, -0.12), a, b, vertex(right, -1, -0.12), 'cross');
+    if (sides[1]) quad(vertex(right, 1, -0.12), c, d, vertex(left, 1, -0.12), 'cross');
   }
-  if (sides[2]) quad(vertex(-1, -1, -0.12), vertex(-1, 1, -0.12), vertex(-1, 1, heights[0]), vertex(-1, -1, heights[0]));
-  if (sides[3]) quad(vertex(1, 1, -0.12), vertex(1, -1, -0.12), vertex(1, -1, heights[2]), vertex(1, 1, heights[2]));
+  if (sides[2]) quad(vertex(-1, -1, -0.12), vertex(-1, 1, -0.12), vertex(-1, 1, heights[0]), vertex(-1, -1, heights[0]), 'along');
+  if (sides[3]) quad(vertex(1, 1, -0.12), vertex(1, -1, -0.12), vertex(1, -1, heights[2]), vertex(1, 1, heights[2]), 'along');
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geometry.computeVertexNormals();
   return geometry;
+}
+
+function framedWallGeometry() {
+  const panel = new THREE.BoxGeometry(1, 1, 1);
+  const pieces = [panel];
+  for (const [x, y, width, height] of [
+    [-0.475, 0, 0.05, 1], [0.475, 0, 0.05, 1],
+    [0, -0.475, 0.9, 0.05], [0, 0.475, 0.9, 0.05],
+  ]) {
+    const trim = new THREE.BoxGeometry(width, height, 1.15);
+    trim.translate(x, y, 0);
+    const uv = trim.getAttribute('uv');
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, 0.12 + uv.getY(i) * 0.7, 0.15 + uv.getX(i) * 0.045);
+    pieces.push(trim);
+  }
+  pieces.forEach((geometry, index) => {
+    const shade = index ? 0.67 : 1;
+    const colors = new Float32Array(geometry.getAttribute('position').count * 3).fill(shade);
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  });
+  const merged = mergeGeometries(pieces);
+  pieces.forEach(geometry => geometry.dispose());
+  if (!merged) throw new Error('Unable to build framed wall geometry');
+  return merged;
+}
+
+function constructionTexture(name: string, fallback: string, color = false) {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 1;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Unable to create construction fallback texture');
+  context.fillStyle = fallback;
+  context.fillRect(0, 0, 1, 1);
+  const texture = new THREE.CanvasTexture(canvas);
+  if (color) texture.colorSpace = THREE.SRGBColorSpace;
+  const path = `${import.meta.env.BASE_URL}assets/environment/construction/weathered-wood-${name}.jpg`;
+  const pending = new THREE.TextureLoader().load(path, loaded => {
+    texture.dispose();
+    texture.image = loaded.image;
+    texture.needsUpdate = true;
+    loaded.dispose();
+  }, undefined, error => {
+    console.error(`Failed to load construction texture ${path}`, error);
+    pending.dispose();
+  });
+  return texture;
 }
 
 export class ConstructionRenderer {
   readonly group = new THREE.Group();
   readonly shelter = new ShelterIndex();
   private readonly geometry = new THREE.BoxGeometry(1, 1, 1);
+  private readonly wallGeometry = framedWallGeometry();
+  private woodTextures: { color: THREE.Texture; normal: THREE.Texture } | null = null;
   private roofGeometries: THREE.BufferGeometry[] = [];
-  private roofBatches: Array<{ geometry: THREE.BufferGeometry; pieces: StructuralPiece[] }> = [];
+  private roofBatches: Array<{ geometry: THREE.BufferGeometry; pieces: StructuralPiece[]; opaque: THREE.InstancedMesh; faded: THREE.InstancedMesh }> = [];
   private occlusionBatches: OcclusionBatch[] = [];
   private fadedFloorBatches: OcclusionBatch[] = [];
   private occlusionGeometries: THREE.BufferGeometry[] = [];
   private occlusionOpacity = new Map<string, number>();
   private occludedPieces = new Set<string>();
   private occlusionTimer = 0;
-  private readonly roofMaterial = new THREE.MeshStandardMaterial({ color: '#704c38', roughness: 0.88, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+  private readonly roofMaterial = new THREE.MeshStandardMaterial({ color: '#704c38', roughness: 0.88 });
+  private readonly fadedRoofMaterial = new THREE.MeshStandardMaterial({ color: '#704c38', roughness: 0.88, transparent: true, depthWrite: false });
   private readonly materials = new Map<string, THREE.MeshStandardMaterial>();
   private meshes: THREE.InstancedMesh[] = [];
   private doors: Array<{ piece: StructuralPiece; mesh: THREE.InstancedMesh; index: number }> = [];
@@ -95,7 +157,8 @@ export class ConstructionRenderer {
   private paints: readonly SurfacePaint[] = [];
 
   constructor() {
-    this.addOpacityShader(this.roofMaterial);
+    this.addOpacityShader(this.roofMaterial, 'opaque');
+    this.addOpacityShader(this.fadedRoofMaterial, 'faded');
   }
 
   setTangentFrame(frame: PlanetTangentFrame | null) {
@@ -114,7 +177,7 @@ export class ConstructionRenderer {
     return THREE.MathUtils.degToRad(transportBearing(geographic, this.tangentFrame.origin, piece.rotation * 90 + 90) - 90);
   }
 
-  private addOpacityShader(material: THREE.MeshStandardMaterial, mode: 'transparent' | 'floor-opaque' | 'floor-faded' = 'transparent') {
+  private addOpacityShader(material: THREE.MeshStandardMaterial, mode: 'transparent' | 'opaque' | 'faded' = 'transparent') {
     material.customProgramCacheKey = () => `construction-${mode}`;
     material.onBeforeCompile = shader => {
       shader.vertexShader = shader.vertexShader
@@ -122,9 +185,9 @@ export class ConstructionRenderer {
         .replace('#include <begin_vertex>', '#include <begin_vertex>\nroofOpacity = instanceOpacity;');
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', '#include <common>\nvarying float roofOpacity;')
-        .replace('#include <color_fragment>', mode === 'floor-opaque'
+        .replace('#include <color_fragment>', mode === 'opaque'
           ? '#include <color_fragment>\nif (roofOpacity < 0.999) discard;'
-          : mode === 'floor-faded'
+          : mode === 'faded'
             ? '#include <color_fragment>\nif (roofOpacity >= 0.999) discard;\ndiffuseColor.a *= roofOpacity;'
             : '#include <color_fragment>\ndiffuseColor.a *= roofOpacity;');
     };
@@ -137,6 +200,19 @@ export class ConstructionRenderer {
     const visiblePieces = this.tangentFrame
       ? pieces.filter(piece => geographicDistanceMeters(this.tangentFrame!.origin, planetPositionToGeographic(piece.x, piece.z)) < 1000)
       : pieces;
+    if (!this.woodTextures && typeof document !== 'undefined'
+        && visiblePieces.some(piece => ['floor', 'wall', 'door', 'roof'].includes(piece.kind))) {
+      this.woodTextures = {
+        color: constructionTexture('color', '#ffffff', true),
+        normal: constructionTexture('normal', '#8080ff'),
+      };
+      for (const material of [this.roofMaterial, this.fadedRoofMaterial]) {
+        material.map = this.woodTextures.color;
+        material.normalMap = this.woodTextures.normal;
+        material.normalScale.set(0.55, 0.55);
+        material.needsUpdate = true;
+      }
+    }
     for (const mesh of this.meshes) { this.group.remove(mesh); mesh.dispose(); }
     this.roofGeometries.forEach(geometry => geometry.dispose());
     this.occlusionGeometries.forEach(geometry => geometry.dispose());
@@ -171,25 +247,29 @@ export class ConstructionRenderer {
           paintedGroups.set(key, group);
         }
         for (const group of paintedGroups.values()) {
-        const materialKey = `${group.color}:${part.opacity ?? 1}:${occluder}:${kind === 'floor'}`;
+        const textured = kind === 'floor' || kind === 'wall' || kind === 'door';
+        const framed = kind === 'wall';
+        const materialKey = `${group.color}:${part.opacity ?? 1}:${occluder}:${kind === 'floor'}:${textured}:${framed}`;
         let material = this.materials.get(materialKey);
         if (!material) {
           const floor = kind === 'floor';
           material = new THREE.MeshStandardMaterial({ color: group.color, roughness: part.opacity ? 0.2 : 0.88,
+            map: textured ? this.woodTextures?.color ?? null : null, normalMap: textured ? this.woodTextures?.normal ?? null : null,
+            normalScale: new THREE.Vector2(0.55, 0.55), vertexColors: framed,
             transparent: (occluder && !floor) || part.opacity !== undefined, opacity: part.opacity ?? 1,
             depthWrite: floor || (!occluder && part.opacity === undefined) });
-          if (occluder) this.addOpacityShader(material, floor ? 'floor-opaque' : 'transparent');
+          if (occluder) this.addOpacityShader(material, floor ? 'opaque' : 'transparent');
           this.materials.set(materialKey, material);
         }
-        let geometry: THREE.BoxGeometry = this.geometry;
+        const sourceGeometry = framed ? this.wallGeometry : this.geometry;
+        let geometry: THREE.BufferGeometry = sourceGeometry;
         if (kind === 'roof') {
           geometry = this.geometry.clone();
           geometry.setAttribute('instanceOpacity', new THREE.InstancedBufferAttribute(new Float32Array(group.pieces.map(piece => this.roofOpacity.get(piece.id) ?? 1)), 1));
           this.roofGeometries.push(geometry);
-          this.roofBatches.push({ geometry, pieces: group.pieces });
           material = this.roofMaterial;
         } else if (occluder) {
-          geometry = this.geometry.clone();
+          geometry = sourceGeometry.clone();
           geometry.setAttribute('instanceOpacity', new THREE.InstancedBufferAttribute(new Float32Array(group.pieces.map(piece => this.occlusionOpacity.get(piece.id) ?? 1)), 1));
           this.occlusionGeometries.push(geometry);
         }
@@ -209,13 +289,16 @@ export class ConstructionRenderer {
         mesh.instanceMatrix.needsUpdate = true;
         this.group.add(mesh);
         this.meshes.push(mesh);
+        if (kind === 'roof') this.addRoofBatch(mesh, group.pieces);
         if (occluder) this.occlusionBatches.push({ mesh, pieces: group.pieces });
         if (kind === 'floor') {
           const fadeKey = `${group.color}:floor-faded`;
           let fadedMaterial = this.materials.get(fadeKey);
           if (!fadedMaterial) {
-            fadedMaterial = new THREE.MeshStandardMaterial({ color: group.color, roughness: 0.88, transparent: true, depthWrite: false });
-            this.addOpacityShader(fadedMaterial, 'floor-faded');
+            fadedMaterial = new THREE.MeshStandardMaterial({ color: group.color, roughness: 0.88,
+              map: this.woodTextures?.color ?? null, normalMap: this.woodTextures?.normal ?? null, normalScale: new THREE.Vector2(0.55, 0.55),
+              transparent: true, depthWrite: false });
+            this.addOpacityShader(fadedMaterial, 'faded');
             this.materials.set(fadeKey, fadedMaterial);
           }
           const faded = new THREE.InstancedMesh(geometry, fadedMaterial, group.pieces.length);
@@ -279,8 +362,24 @@ export class ConstructionRenderer {
       this.group.add(mesh);
       this.meshes.push(mesh);
       this.roofGeometries.push(geometry);
-      this.roofBatches.push({ geometry, pieces: batch.pieces });
+      this.addRoofBatch(mesh, batch.pieces);
     }
+  }
+
+  private addRoofBatch(mesh: THREE.InstancedMesh, pieces: StructuralPiece[]) {
+    const faded = new THREE.InstancedMesh(mesh.geometry, this.fadedRoofMaterial, pieces.length);
+    faded.position.copy(mesh.position);
+    faded.quaternion.copy(mesh.quaternion);
+    faded.scale.copy(mesh.scale);
+    faded.instanceMatrix.copy(mesh.instanceMatrix);
+    faded.instanceMatrix.needsUpdate = true;
+    faded.receiveShadow = true;
+    const opacity = mesh.geometry.getAttribute('instanceOpacity');
+    mesh.visible = pieces.some((_, index) => opacity.getX(index) >= opaqueThreshold);
+    faded.visible = pieces.some((_, index) => opacity.getX(index) < opaqueThreshold);
+    this.group.add(faded);
+    this.meshes.push(faded);
+    this.roofBatches.push({ geometry: mesh.geometry, pieces, opaque: mesh, faded });
   }
 
   update(dt: number, player: THREE.Vector3, camera?: THREE.Vector3, renderOrigin?: THREE.Vector3) {
@@ -333,14 +432,21 @@ export class ConstructionRenderer {
     const room = this.shelter.roomAt(player.x, player.y, player.z);
     for (const batch of this.roofBatches) {
       const opacity = batch.geometry.getAttribute('instanceOpacity');
+      let opaque = false;
+      let faded = false;
       batch.pieces.forEach((piece, index) => {
         const target = room && Math.abs(piece.y - room.y) < 0.05 && room.cells.has(`${piece.x},${piece.z}`)
           && (!camera || camera.y > piece.y + FLOOR_HEIGHT) ? 0.2 : 1;
         const next = THREE.MathUtils.damp(this.roofOpacity.get(piece.id) ?? 1, target, 4, dt);
         this.roofOpacity.set(piece.id, next);
         opacity.setX(index, next);
+        const stored = opacity.getX(index);
+        opaque ||= stored >= opaqueThreshold;
+        faded ||= stored < opaqueThreshold;
       });
       opacity.needsUpdate = true;
+      batch.opaque.visible = opaque;
+      batch.faded.visible = faded;
     }
   }
 

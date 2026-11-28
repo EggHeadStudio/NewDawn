@@ -59,7 +59,7 @@ export class CharacterPreview {
     this.model = createCharacter(appearance);
     attachAuthoredCharacter(this.model, appearance, error => {
       console.error('Could not load authored character preview', error);
-    });
+    }, { backpack: true });
     this.scene.add(this.model);
   }
 

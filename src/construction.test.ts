@@ -85,6 +85,23 @@ describe('modular construction', () => {
     expect(addPiece(piece('wall', 2, 1), pieces, { ...stock, wood: 0 })).toBe(false);
   });
 
+  it('allows an upper floor after removing a pitched roof without duplicating its refund', () => {
+    const stock = inventory();
+    const roof: StructuralPiece = {
+      ...piece('roof', 0, 0), automatic: true,
+      roofShape: { style: 'gable', axis: 0, heights: [0, 0.9, 0] },
+    };
+    const pieces = [roof];
+    const upper = piece('floor', 0, 0, 4.4, 1);
+    expect(pieceProblem(upper, pieces, stock)).toBe('Remove the pitched roof before building above it');
+    expect(addPiece(upper, pieces, stock)).toBe(false);
+    expect(stock.wood).toBe(12);
+    expect(removePiece(roof.id, pieces, stock)).toBe(true);
+    expect(removePiece(roof.id, pieces, stock)).toBe(false);
+    expect(addPiece(upper, pieces, stock)).toBe(true);
+    expect(stock.wood).toBe(11);
+  });
+
   it('requires a frame, rejects overlapping walls, and protects a frame with a door', () => {
     const pieces: StructuralPiece[] = [];
     const stock = inventory();

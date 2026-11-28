@@ -111,8 +111,11 @@ export class Effects {
 
 export class Precipitation {
   private readonly points: THREE.Points;
+  private readonly rain: THREE.LineSegments;
   private readonly positions = new Float32Array(150 * 3);
   private readonly visibility = new Float32Array(150).fill(1);
+  private readonly rainPositions = new Float32Array(150 * 6);
+  private readonly rainOpacity = new Float32Array(150 * 2);
   private readonly snow = { value: 0 };
   private weather: Weather = 'Clear';
 
@@ -136,25 +139,66 @@ export class Precipitation {
     this.points = new THREE.Points(geometry, material);
     this.points.frustumCulled = false;
     this.points.visible = false;
-    scene.add(this.points);
+    const rainGeometry = new THREE.BufferGeometry();
+    rainGeometry.setAttribute('position', new THREE.BufferAttribute(this.rainPositions, 3));
+    rainGeometry.setAttribute('rainOpacity', new THREE.BufferAttribute(this.rainOpacity, 1));
+    const rainMaterial = new THREE.LineBasicMaterial({
+      color: '#b7c9cb', transparent: true, opacity: 0.32, depthWrite: false,
+    });
+    rainMaterial.onBeforeCompile = shader => {
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute float rainOpacity;\nvarying float vRainOpacity;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvRainOpacity = rainOpacity;');
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying float vRainOpacity;')
+        .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.a *= vRainOpacity;');
+    };
+    this.rain = new THREE.LineSegments(rainGeometry, rainMaterial);
+    this.rain.frustumCulled = false;
+    this.rain.visible = false;
+    scene.add(this.points, this.rain);
   }
 
-  update(weather: Weather, focus: THREE.Vector3, dt: number, shelter?: ShelterIndex) {
+  update(weather: Weather, focus: THREE.Vector3, dt: number, shelter?: ShelterIndex, wind = 0) {
     if (weather !== this.weather) {
       this.weather = weather;
       this.snow.value = weather === 'Snow' ? 1 : 0;
       const material = this.points.material as THREE.PointsMaterial;
       material.size = weather === 'Snow' ? 0.16 : 0.09;
     }
-    this.points.visible = weather === 'Rain' || weather === 'Snow' || weather === 'Storm';
-    if (!this.points.visible) return;
+    this.points.visible = weather === 'Snow';
+    this.rain.visible = weather === 'Rain' || weather === 'Storm';
+    if (!this.points.visible && !this.rain.visible) return;
     this.points.position.set(focus.x, focus.y, focus.z);
+    this.rain.position.copy(this.points.position);
+    const drift = Math.min(1.6, Math.max(0, wind)) * 1.1;
     for (let i = 1; i < this.positions.length; i += 3) {
+      const particle = (i - 1) / 3;
+      if (this.rain.visible) {
+        this.positions[i - 1] += dt * drift;
+        if (this.positions[i - 1] > 12) this.positions[i - 1] -= 24;
+      }
       this.positions[i] -= dt * (weather === 'Snow' ? 1.5 : 10);
       if (this.positions[i] < 0) this.positions[i] += 14;
-      this.visibility[(i - 1) / 3] = shelter?.coverAt(focus.x + this.positions[i - 1], focus.y + this.positions[i], focus.z + this.positions[i + 1]) ? 0 : 1;
+      this.visibility[particle] = shelter?.coverAt(focus.x + this.positions[i - 1], focus.y + this.positions[i], focus.z + this.positions[i + 1]) ? 0 : 1;
+      if (this.rain.visible) {
+        const tail = 0.11 + (particle * 17 % 11) * 0.016;
+        const offset = particle * 6;
+        this.rainPositions[offset] = this.positions[i - 1];
+        this.rainPositions[offset + 1] = this.positions[i];
+        this.rainPositions[offset + 2] = this.positions[i + 1];
+        this.rainPositions[offset + 3] = this.positions[i - 1] - drift * tail / 10;
+        this.rainPositions[offset + 4] = this.positions[i] + tail;
+        this.rainPositions[offset + 5] = this.positions[i + 1];
+        this.rainOpacity[particle * 2] = this.visibility[particle];
+        this.rainOpacity[particle * 2 + 1] = 0;
+      }
     }
     this.points.geometry.attributes.position.needsUpdate = true;
     this.points.geometry.attributes.particleVisibility.needsUpdate = true;
+    if (this.rain.visible) {
+      this.rain.geometry.attributes.position.needsUpdate = true;
+      this.rain.geometry.attributes.rainOpacity.needsUpdate = true;
+    }
   }
 }

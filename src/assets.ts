@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { createRoverVisual } from './rover';
 export { createCharacter } from './characters';
 export { createEnemy } from './enemies';
 export type { Outfit } from './appearance';
@@ -182,26 +183,6 @@ export function createWindTurbine() {
 }
 
 export function createVehicle() {
-  const root = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.55, 1.3), mat('#b84d3d'));
-  body.position.y = 0.65;
-  body.castShadow = true;
-  root.add(body);
-  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.75, 1.15), mat('#67a0aa'));
-  cabin.position.set(-0.35, 1.28, 0);
-  cabin.castShadow = true;
-  root.add(cabin);
-  const wheels: THREE.Mesh[] = [];
-  [-0.78, 0.78].forEach(x => [-0.68, 0.68].forEach(z => {
-    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.18, 10), mat('#263237'));
-    wheel.position.set(x, 0.32, z);
-    wheel.rotation.x = Math.PI / 2;
-    wheel.castShadow = true;
-    wheels.push(wheel);
-    root.add(wheel);
-  }));
-  root.userData.wheels = wheels;
-  root.userData.vehicle = true;
-  return root;
+  return createRoverVisual().root;
 }
 

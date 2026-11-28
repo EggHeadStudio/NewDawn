@@ -6,6 +6,78 @@ import { geographicToPlanetPosition, PlanetTangentFrame } from './planet';
 import { resolvePlanetActorMove } from './physics';
 
 describe('construction visibility', () => {
+  it.each([
+    { name: 'flat', shape: undefined },
+    { name: 'gable east-west', shape: { style: 'gable' as const, axis: 0 as const, heights: [0, 0.9, 0] as [number, number, number] } },
+    { name: 'gable north-south', shape: { style: 'gable' as const, axis: 1 as const, heights: [0, 0.9, 0] as [number, number, number] } },
+    { name: 'single east-west', shape: { style: 'single' as const, axis: 0 as const, heights: [0, 0.45, 0.9] as [number, number, number] } },
+    { name: 'single north-south', shape: { style: 'single' as const, axis: 1 as const, heights: [0, 0.45, 0.9] as [number, number, number] } },
+  ])('renders one outward roof surface from above and below: $name', ({ shape }) => {
+    const roof: StructuralPiece = { id: 'roof', kind: 'roof', x: 0, z: 0, y: 0, level: 0, rotation: 0, open: false,
+      ...(shape ? { roofShape: shape } : {}) };
+    const renderer = new ConstructionRenderer();
+    renderer.refresh([roof]);
+    renderer.group.updateMatrixWorld(true);
+    const mesh = renderer.group.children.find(child => child instanceof THREE.InstancedMesh
+      && child.userData.constructionKind === 'roof') as THREE.InstancedMesh;
+    for (const [height, direction] of [[5, -1], [1, 1]]) {
+      const ray = new THREE.Raycaster(new THREE.Vector3(0.37, height, 0.19), new THREE.Vector3(0, direction, 0), 0, 4);
+      expect(ray.intersectObject(mesh)).toHaveLength(1);
+    }
+  });
+
+  it.each([
+    { style: 'gable' as const, heights: [0, 0.9, 0] as [number, number, number] },
+    { style: 'single' as const, heights: [0, 0.45, 0.9] as [number, number, number] },
+  ])('keeps $style roof ends visible on both axes', ({ style, heights }) => {
+    for (const axis of [0, 1] as const) {
+      const roof: StructuralPiece = { id: 'roof', kind: 'roof', x: 0, z: 0, y: 0, level: 0, rotation: 0, open: false,
+        roofShape: { style, axis, heights } };
+      const renderer = new ConstructionRenderer();
+      renderer.refresh([roof]);
+      renderer.group.updateMatrixWorld(true);
+      const mesh = renderer.group.children.find(child => child instanceof THREE.InstancedMesh
+        && child.userData.constructionKind === 'roof') as THREE.InstancedMesh;
+      for (const sign of [-1, 1]) {
+        const origin = axis === 0 ? new THREE.Vector3(0.37, 2.7, sign * 2) : new THREE.Vector3(sign * 2, 2.7, 0.37);
+        const direction = axis === 0 ? new THREE.Vector3(0, 0, -sign) : new THREE.Vector3(-sign, 0, 0);
+        expect(new THREE.Raycaster(origin, direction, 0, 1.5).intersectObject(mesh)).toHaveLength(1);
+      }
+    }
+  });
+
+  it('keeps roof texture coordinates continuous across the pitch and its adjoining tile', () => {
+    const roof: StructuralPiece = { id: 'gable', kind: 'roof', x: 0, z: 0, y: 0, level: 0, rotation: 0, open: false,
+      roofShape: { style: 'gable', axis: 0, heights: [0, 0.9, 0] } };
+    const renderer = new ConstructionRenderer();
+    renderer.refresh([roof]);
+    const mesh = renderer.group.children.find(child => child instanceof THREE.InstancedMesh
+      && child.userData.constructionKind === 'roof') as THREE.InstancedMesh;
+    const position = mesh.geometry.getAttribute('position');
+    const uv = mesh.geometry.getAttribute('uv');
+    expect(uv.count).toBe(position.count);
+    for (let i = 0; i < 12; i++) {
+      expect(uv.getX(i)).toBeCloseTo((position.getZ(i) + 1) / 2);
+      expect(uv.getY(i)).toBeCloseTo((position.getX(i) + 1) / 2);
+    }
+  });
+
+  it('fades framed wall details with their owning piece and disposes their instance geometry', () => {
+    const wall: StructuralPiece = { id: 'wall', kind: 'wall', x: 0, z: 1, y: 0, level: 0, rotation: 0, open: false };
+    const renderer = new ConstructionRenderer();
+    renderer.refresh([wall]);
+    const mesh = renderer.group.children.find(child => child instanceof THREE.InstancedMesh
+      && child.userData.constructionKind === 'wall') as THREE.InstancedMesh;
+    expect(mesh.geometry.getAttribute('color').count).toBeGreaterThan(24);
+    expect((mesh.material as THREE.MeshStandardMaterial).vertexColors).toBe(true);
+    renderer.update(1, new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 2, 5));
+    expect(mesh.geometry.getAttribute('instanceOpacity').getX(0)).toBeLessThan(0.35);
+    let disposed = false;
+    mesh.geometry.addEventListener('dispose', () => { disposed = true; });
+    renderer.refresh([]);
+    expect(disposed).toBe(true);
+  });
+
   it('reprojects a wall with its collision query through frame relocation', () => {
     const position = geographicToPlanetPosition(85, 179.99999);
     const wall: StructuralPiece = { id: 'wall', kind: 'wall', ...position, y: 0, level: 0, rotation: 0, open: false };

@@ -1,12 +1,13 @@
 import * as THREE from 'three';
 import { onboardingObjective, type OnboardingState } from './onboarding';
 import './style.css';
-import { World, safeSpawn, seededNoise } from './world';
+import { World, biomeAt, safeSpawn, seededNoise } from './world';
 import { TreeClearance } from './tree-occlusion';
+import { TREE_WORK_REACH } from './tree-harvest';
 import { atlasBiomeAtCell, atlasBiomeColors } from './atlas';
 import { cameraPitchView, cameraRelativeMovement, clampCameraDistance, clampCameraPitch, dampAngle, defaultCameraSettings } from './camera';
 import { buildingCosts, buildingRadius, canAfford, placementProblem, craftTool, isNight, spend, type BuildingKind, type Inventory, type Tool } from './gameplay';
-import { isSaveData } from './save';
+import { isSaveData, toolsFromSave } from './save';
 import { chooseNpcActivity, type NpcJob, type NpcState } from './npc';
 import { areConnected, updatePower, type PowerNode } from './power';
 import { Effects, Precipitation } from './effects';
@@ -14,9 +15,10 @@ import { seasonForDay, weatherForDay } from './calendar';
 import { appearanceFromSeed, appearanceLabels, appearanceOptions, defaultAppearance, type CharacterAppearance } from './appearance';
 import { CharacterPreview } from './character-preview';
 import { createWildlife, updateWildlife, type AnimalState } from './wildlife';
-import { animateAnimal, createAnimal, disposeAnimal } from './animal-assets';
+import { animateAnimal, createAnimal, disposeAnimal, updateBirdFlightHeight } from './animal-assets';
+import { attachAuthoredAnimal, updateAuthoredAnimal } from './authored-animal';
 import { disposeCharacter } from './characters';
-import { attachAuthoredCharacter, updateAuthoredCharacter } from './authored-character';
+import { attachAuthoredCharacter, setAuthoredBackpackVisible, updateAuthoredCharacter, visibleCharacterTool } from './authored-character';
 import { chooseEnemyKind, enemyIntent, enemyProfiles, stepEnemyProjectile, type EnemyKind } from './enemies';
 import { enterImmersiveMode, setupPwa, UPDATE_RESUME_KEY } from './pwa';
 import {
@@ -33,15 +35,24 @@ import { PlanetaryRuntimeFrame } from './runtime-frame';
 import { addPiece, FLOOR_HEIGHT, floorSurface, isEdgePiece, pieceBlocks, pieceCosts, removePiece, replacePiece, replacementProblem, replacementTarget, snapPiece, suggestFloorEdge, type PieceKind, type PieceRotation, type RoofStyle, type StructuralPiece } from './construction';
 import { reconcileRoof, reshapeRoof, type RoofAxis, type RoofRequest } from './roof';
 import { ConstructionRenderer, createPieceGhost } from './construction-render';
-import { emptyMinerals } from './economy';
+import { emptyMinerals, requiresPickaxe, type DepositKind } from './economy';
 import { advanceSmelting, startSmelting, type SmeltableOre, type SmeltingJob } from './smelting';
 import { atmosphericFogRange, environmentLighting, moonlitSceneLighting } from './environment-lighting';
 import { celestialState, Sky } from './sky';
 import { WaterEffects } from './water-effects';
+import { Footprints, footprintSurface } from './footprints';
 import { FrameSamples, SustainedBenchmark } from './performance-monitor';
 import { renderPixelRatio } from './render-quality';
+import {
+  commitRoverDrive, getRoverVisual, proposeRoverDrive, roverWheelSamplePoints,
+  type RoverFour, type RoverWheel,
+} from './rover';
+import {
+  combineCollisionQueries, createStructureCollisionQuery, createWildlifeCollision,
+  type CollisionQuery,
+} from './wildlife-collision';
 import { craftTorch, nearbyFireLights, togglePostFlame, toggleTorchEquipment, toggleTorchFlame, type TorchState } from './fire';
-import { attachHandTorch, createHandTorch, createTorchPost, FireSparks, torchFirePosition } from './fire-render';
+import { attachHandTorch, createHandTorch, createTorchPost, FireSparks, fireLightIntensity, torchFirePosition, updateFireAnimation } from './fire-render';
 import {
   createCharacter, createShelter, createStorage, createLamp, createGenerator,
   createWindTurbine, createVehicle, createEnemy, createBattery, createCable, createSmelter, type Outfit,
@@ -54,6 +65,28 @@ function isTorchPost(record: BuildingRecord): record is TorchPostRecord {
   return record.kind === 'torchpost' && typeof record.id === 'string' && typeof record.lit === 'boolean';
 }
 type BuildKind = BuildingKind | PieceKind;
+type SelectedWeapon = 'fists' | 'stick' | 'axe' | 'stones' | 'saw';
+
+const icons = {
+  fists: '<path d="M5 11V8a2 2 0 0 1 4 0V6a2 2 0 0 1 4 0v1a2 2 0 0 1 4 0v2a2 2 0 0 1 3 2v4c0 3-2 5-5 5h-3c-3 0-5-2-6-4l-2-3a2 2 0 0 1 1-2Z"/><path d="M9 8v4m4-5v5m4-3v3"/>',
+  stick: '<path d="m6 20 8-15c1-2 4-2 5 0s-1 4-2 5L9 21Z"/><path d="m7 16 3 2m-4 0 3 2"/>',
+  axe: '<path d="m5 21 9-15 2 1L7 22Z"/><path d="M13 8 11 4c3 0 5-1 6-3 0 3 1 5 4 7l-4 3Z"/>',
+  saw: '<path d="M3 16 15 4l5 2-1 5L7 21l-4-1Z"/><path d="m8 18 2 1m1-4 2 1m1-4 2 1m1-4 2 1M3 16l4 4"/>',
+  stones: '<path d="m4 10 3-5 7-2 6 4 1 7-4 6-8 1-5-4Z"/><path d="m7 5 3 5-6 2m6-2 7 1 3-4m-3 4v9"/>',
+  pickaxe: '<path d="M5 21 15 7m-2-2c3-2 6-1 8 2-3-1-5-1-7 1-2-1-4-1-7 0 1-2 3-3 6-3Z"/>',
+  torch: '<path d="m9 12 2 9h2l2-9m-6 0h6M12 3c1 3 4 3 4 6a4 4 0 0 1-8 0c0-2 1-3 2-4 0 2 1 2 2 3 1-2 0-3 0-5Z"/>',
+  pack: '<rect x="5" y="6" width="14" height="16" rx="3"/><path d="M9 6V4a3 3 0 0 1 6 0v2M5 13h14M9 13v4h6v-4"/>',
+  wood: '<path d="m5 8 10-4 4 2v10l-10 4-4-2Z"/><path d="M9 20V10l10-4M5 8l4 2m4 2v5"/>',
+  stone: '<path d="m3 14 4-8 8-2 6 7-3 8-10 1Z"/><path d="m7 6 3 6-7 2m7-2 7 1 4-2"/>',
+  food: '<path d="M4 13h16c0 5-3 8-8 8s-8-3-8-8Zm3 0c0-4 2-6 5-7 3 1 5 3 5 7M12 6V3"/>',
+  water: '<path d="M12 3S6 10 6 15a6 6 0 0 0 12 0c0-5-6-12-6-12Zm-3 13c.3 1.4 1.3 2 2.5 2"/>',
+  mineral: '<path d="m4 15 3-8 6-3 7 5 1 7-5 4H8Z"/><path d="m7 7 4 4-3 9m3-9 9-2m-9 2 5 9"/>',
+  ingot: '<path d="m6 8 2-4h8l2 4 3 10H3L6 8Zm0 0h12M3 18h18"/>',
+  glass: '<path d="M7 3h10l-1 7-4 3-4-3-1-7Zm5 10v7m-4 1h8"/>',
+  flame: '<path d="M12 2c1 4 5 5 5 10a5 5 0 0 1-10 0c0-3 1-5 3-7 0 3 1 4 2 5 2-3 0-5 0-8Z"/>',
+} as const;
+type IconName = keyof typeof icons;
+const icon = (name: IconName) => `<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">${icons[name]}</svg>`;
 
 function isPieceKind(kind: BuildKind): kind is PieceKind {
   return Object.hasOwn(pieceCosts, kind);
@@ -100,7 +133,7 @@ app.innerHTML = `
       <div class="time-card"><strong id="timeText">06:00</strong><span id="seasonText">SPRING · DAY 1</span></div>
       <button id="pauseButton" class="icon-button">Ⅱ</button>
     </div>
-    <canvas id="minimap" width="180" height="180" role="button" tabindex="0" aria-label="Show local map coordinates"></canvas>
+    <canvas id="minimap" width="180" height="180" role="button" tabindex="0" aria-label="Open world atlas"></canvas>
     <div id="objective" class="objective"><span id="survivorLabel">FIRST STEPS</span><strong id="objectiveText">Gather wood and stone</strong></div>
     <div id="vehicleIndicator" class="vehicle-indicator hidden" aria-live="off">SPEED 0.0</div>
     <div id="shelterStatus" class="shelter-status hidden" aria-live="polite"></div>
@@ -120,11 +153,8 @@ app.innerHTML = `
       <button id="weaponButton" class="pad-weapon" aria-label="Attack with fists"><svg id="weaponIcon" viewBox="0 0 24 24" aria-hidden="true"></svg><span id="weaponLabel">Fists</span><b id="weaponAmmo" class="hidden"></b></button>
     </div>
     <div class="quickbar">
-      <button id="toolHubButton" class="selected" aria-label="Open tool hub">☷<small>Tools</small></button>
+      <button id="toolHubButton" aria-label="Open tools, fists selected" aria-expanded="false" aria-controls="toolHub"><svg id="toolHubIcon" class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"></svg><small>Tools</small></button>
       <button data-tool="build" aria-label="Build structures">▦<small>Build</small></button>
-      <button data-tool="axe" aria-label="Gathering tool">⛏<small>Tool</small></button>
-      <button id="inventoryButton" aria-label="Open inventory">▣<small>Pack</small></button>
-      <button id="atlasButton" aria-label="Open world atlas">◎<small>Atlas</small></button>
       <button id="roadTool" class="hidden" aria-label="Build roads">Road</button>
       <button id="terrainTool" class="hidden" aria-label="Terrain editing">Terrain</button>
       <button id="paintTool" class="hidden" aria-label="Paint surfaces">Paint</button>
@@ -134,7 +164,7 @@ app.innerHTML = `
   <div id="placementToolbar" class="placement-toolbar hidden" aria-label="Building placement">
     <strong id="placementName"></strong><span id="placementStatus" role="status"></span><small id="placementCoordinates"></small>
     <div id="floorControls" class="floor-controls hidden"><button id="floorDown" type="button" aria-label="Lower building level">−</button><span id="floorLevel">LEVEL 0</span><button id="floorUp" type="button" aria-label="Raise building level">+</button><button id="removePiece" type="button">REMOVE</button><button id="autoOrient" class="hidden" type="button">AUTO EDGE</button><label><input id="autoRoof" type="checkbox" checked> Auto roof</label></div>
-    <details id="roofControls" class="hidden"><summary>ROOF STYLE</summary><div class="roof-controls"><label>Roof <select id="roofStyle" aria-label="Automatic roof style"><option value="flat">Flat</option><option value="gable">Gable</option><option value="single">Single slope</option></select></label><label>Axis <select id="roofAxis" aria-label="Roof slope axis"><option value="auto">Auto</option><option value="x">East–west</option><option value="z">North–south</option></select></label><button id="applyRoof" type="button">APPLY TO AIMED ROOM</button><small>Reshape complete auto roof: 0 wood, no refund.</small></div></details>
+    <details id="roofControls" class="hidden"><summary>ROOF STYLE</summary><div class="roof-controls"><label>Roof <select id="roofStyle" aria-label="Automatic roof style"><option value="flat">Flat</option><option value="gable" selected>Gable</option><option value="single">Single slope</option></select></label><label>Axis <select id="roofAxis" aria-label="Roof slope axis"><option value="auto">Auto</option><option value="x">East–west</option><option value="z">North–south</option></select></label><button id="applyRoof" type="button">APPLY TO AIMED ROOM</button><small>Reshape complete auto roof: 0 wood, no refund.</small></div></details>
     <div class="placement-buttons"><button id="rotateBuild" type="button">ROTATE <kbd>R</kbd></button><button id="changeBuild" type="button">CHANGE</button><button id="confirmBuild" type="button">PLACE</button><button id="cancelBuild" type="button">CANCEL</button></div>
     <small class="placement-hint">Point at ground · Click to place · Right-drag to orbit</small>
   </div>
@@ -168,16 +198,16 @@ app.innerHTML = `
   <div id="toolHub" class="tool-hub hidden" role="dialog" aria-label="Tool hub">
     <header><strong>TOOL HUB</strong><button id="closeToolHub" aria-label="Close tool hub">×</button></header>
     <div class="tool-hub-grid">
+      <button id="inventoryButton" aria-label="Open pack and crafting">${icon('pack')}<span>Pack</span></button>
+      <button data-hub="fists" aria-pressed="false">${icon('fists')}<span>Fists</span></button>
+      <button data-hub="stick" aria-pressed="false">${icon('stick')}<span>Stick</span></button>
+      <button data-hub="axe" aria-pressed="false">${icon('axe')}<span>Axe</span></button>
+      <button data-hub="saw" aria-pressed="false">${icon('saw')}<span>Saw</span></button>
+      <button data-hub="stones" aria-pressed="false">${icon('stones')}<span id="stoneHubCount">Stones 0</span></button>
       <button data-hub="build">▦<span>Build</span></button>
       <button data-hub="road">╬<span>Road</span></button>
       <button data-hub="terrain">◇<span>Terrain</span></button>
       <button data-hub="paint">◒<span>Paint</span></button>
-      <button data-hub="fists">拳<span>Fists</span></button>
-      <button data-hub="stick">━<span>Stick</span></button>
-      <button data-hub="axe">⛏<span>Axe</span></button>
-      <button data-hub="stones">●<span id="stoneHubCount">Stones 0</span></button>
-      <button data-hub="torch">♨<span>Torch</span></button>
-      <button data-hub="atlas">◎<span>Atlas</span></button>
     </div>
   </div>
   <div id="atlasPanel" class="atlas-panel hidden" role="dialog" aria-modal="true" aria-labelledby="atlasTitle">
@@ -196,7 +226,28 @@ app.innerHTML = `
     </div>
   </div>
   <div id="npcPanel" class="panel hidden"><button id="closeNpc" class="close" aria-label="Close survivor menu">×</button><h2>MIRA · SURVIVOR</h2><p id="npcStatus">A friendly survivor.</p><button id="npcRecruit" class="primary">RECRUIT</button><button data-job="wood" class="secondary">GATHER WOOD</button><button data-job="stone" class="secondary">GATHER STONE</button><button data-job="idle" class="secondary">REST</button></div>
-  <div id="craftPanel" class="panel hidden"><button id="closeCraft" class="close" aria-label="Close crafting">×</button><h2>CRAFTING</h2><p>Craft a pickaxe to mine ore, coal and limestone. Clay and sand can be gathered by hand.</p><button data-craft="axe" class="secondary">AXE · 3 WOOD, 2 STONE</button><button data-craft="pickaxe" class="secondary">PICKAXE · 2 WOOD, 3 STONE</button><p id="toolStatus"></p><button id="craftTorch" class="secondary">CRAFT TORCH · 2 WOOD, 1 COAL</button><button id="equipTorch" class="secondary">EQUIP TORCH</button><button id="igniteTorch" class="secondary">IGNITE TORCH</button><p id="torchStatus"></p><p id="mineralInventory"></p></div>
+  <div id="craftPanel" class="panel pack-panel hidden" role="dialog" aria-labelledby="packTitle">
+    <button id="closeCraft" class="close" aria-label="Close pack">×</button>
+    <h2 id="packTitle">PACK &amp; CRAFTING</h2>
+    <p>Your starter saw is in Tools. Select it to fell trees and saw trunks; gather the cut wood separately. A pickaxe is used automatically for mining.</p>
+    <h3>CRAFT</h3>
+    <div class="pack-grid">
+      <button data-craft="axe" class="pack-action" aria-label="Craft axe, 3 wood and 2 stone">${icon('axe')}<strong>Axe</strong><small>${icon('wood')} 3 ${icon('stone')} 2</small></button>
+      <button data-craft="pickaxe" class="pack-action" aria-label="Craft pickaxe, 2 wood and 3 stone">${icon('pickaxe')}<strong>Pickaxe</strong><small>${icon('wood')} 2 ${icon('stone')} 3</small></button>
+      <button id="craftTorch" class="pack-action" aria-label="Craft torch, 2 wood and 1 coal">${icon('torch')}<strong>Torch</strong><small>${icon('wood')} 2 ${icon('mineral')} 1</small></button>
+    </div>
+    <p id="toolStatus" aria-live="polite"></p>
+    <h3>EQUIPMENT</h3>
+    <div class="pack-grid">
+      <button id="equipBackpack" class="pack-action" aria-label="Wear backpack" aria-pressed="true">${icon('pack')}<strong>Backpack</strong><small>Worn</small></button>
+      <button id="equipTorch" class="pack-action" aria-pressed="false">${icon('torch')}<strong>Equip</strong><small>Torch</small></button>
+      <button id="igniteTorch" class="pack-action" aria-pressed="false">${icon('flame')}<strong>Ignite</strong><small>Torch</small></button>
+    </div>
+    <p id="backpackStatus" aria-live="polite"></p>
+    <p id="torchStatus" aria-live="polite"></p>
+    <h3>RESOURCES</h3><div id="basicInventory" class="pack-grid pack-items"></div>
+    <h3>MINERALS &amp; MATERIALS</h3><div id="mineralInventory" class="pack-grid pack-items"></div>
+  </div>
   <div id="smelterPanel" class="panel hidden"><button id="closeSmelter" class="close" aria-label="Close smelter">×</button><h2>SMELTER &amp; FURNACE</h2><p id="smelterStatus"></p><button data-smelt="ironOre" class="secondary">IRON INGOT · 2 IRON ORE + 1 COAL</button><button data-smelt="copperOre" class="secondary">COPPER INGOT · 2 COPPER ORE + 1 COAL</button><button data-smelt="sand" class="secondary">GLASS · 2 SAND + 1 COAL</button><button id="forgePickaxe" class="secondary">IRON PICKAXE · 2 IRON + 2 WOOD</button><p>Close this panel to let production run. The iron pickaxe doubles mineral yield.</p></div>
   <div id="pausePanel" class="panel hidden"><h2>PAUSED</h2>
     <label class="setting">Auto follow <input id="cameraFollow" type="checkbox" checked></label>
@@ -213,14 +264,14 @@ app.innerHTML = `
     <label class="setting">Quality <select id="graphicsQuality"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></label>
     <button id="showPerformance" class="secondary" type="button">SHOW PERFORMANCE MONITOR</button>
     <button id="skipIntroduction" class="secondary">SKIP INTRODUCTION</button><button id="restartIntroduction" class="secondary">RESTART INTRODUCTION</button>
-    <p>Game version: ${__APP_VERSION__}<br><a href="${import.meta.env.BASE_URL}assets/environment/sky/moon-LICENSE.txt" target="_blank" rel="noopener" style="color:inherit">Moon texture: Solar System Scope (CC BY 4.0)</a></p><button id="exitFullscreen" class="secondary">EXIT FULLSCREEN</button>
+    <p>Game version: ${__APP_VERSION__}<br><a href="${import.meta.env.BASE_URL}assets/environment/sky/moon-LICENSE.txt" target="_blank" rel="noopener" style="color:inherit">Moon texture: Solar System Scope (CC BY 4.0)</a><br><a href="${import.meta.env.BASE_URL}assets/animals/red-squirrel-LICENSE.txt" target="_blank" rel="noopener" style="color:inherit">Squirrel model: vinish.dev (CC BY 4.0)</a><br><a href="${import.meta.env.BASE_URL}assets/animals/gray-wolf-LICENSE.txt" target="_blank" rel="noopener" style="color:inherit">Wolf model: vinish.dev (CC BY 4.0)</a><br><a href="${import.meta.env.BASE_URL}assets/animals/grizzly-bear-LICENSE.txt" target="_blank" rel="noopener" style="color:inherit">Bear model: vinish.dev (CC BY 4.0)</a><br><a href="${import.meta.env.BASE_URL}assets/environment/trees/vinish-trees-LICENSE.txt" target="_blank" rel="noopener" style="color:inherit">Palm model: vinish.dev (CC BY 4.0)</a></p><button id="exitFullscreen" class="secondary">EXIT FULLSCREEN</button>
     <button id="resumeGame" class="primary">RESUME</button><button id="saveGame" class="secondary">SAVE WORLD</button><button id="returnMenu" class="secondary">MAIN MENU</button></div>
   <div id="updatePanel" class="update-panel hidden" role="dialog" aria-labelledby="updateTitle"><strong id="updateTitle">New Dawn Update Available</strong><p>Save your world and restart to play the new version.</p><div><button id="applyUpdate" class="primary">UPDATE NOW</button><button id="laterUpdate" class="secondary">LATER</button></div></div>
-  <div id="toast" class="toast"></div>
   <div id="performanceMonitor" class="performance-monitor hidden" role="region" aria-label="Performance monitor">
     <strong>PERFORMANCE MONITOR</strong><pre id="performanceData"></pre>
     <div><button id="startBenchmark" type="button">START 30s TEST</button><button id="copyPerformance" type="button">COPY REPORT</button><button id="hidePerformance" type="button">HIDE</button></div>
   </div>
+  <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 `;
 
 const canvas = document.querySelector<HTMLCanvasElement>('#game')!;
@@ -239,6 +290,7 @@ const sky = new Sky(scene, renderer);
 void sky.loadMoonSurface().catch(error => console.error('Failed to load local Moon surface; retaining the plain disc.', error));
 const effects = new Effects(scene);
 const waterEffects = new WaterEffects(scene);
+const footprints = new Footprints(scene);
 const precipitation = new Precipitation(scene);
 scene.background = new THREE.Color('#92c7cf');
 scene.fog = new THREE.Fog('#92c7cf', 42, 92);
@@ -296,17 +348,25 @@ let appearance: CharacterAppearance = { ...defaultAppearance(outfit), clothing: 
 let characterName = 'Survivor';
 let npcAppearanceSeed = ((seed >>> 0) + 53917) >>> 0;
 let characterLoadErrorShown = false;
-function useAuthoredCharacter(character: THREE.Group, look: CharacterAppearance) {
+let backpackLoadErrorShown = false;
+let backpackEquipped = true;
+function useAuthoredCharacter(character: THREE.Group, look: CharacterAppearance, backpack = false) {
   attachAuthoredCharacter(character, look, error => {
     console.error('Could not load authored character; using procedural fallback', error);
     if (!characterLoadErrorShown) {
       characterLoadErrorShown = true;
       toast('Character assets could not be loaded; using fallback');
     }
-  });
+  }, { backpack, onBackpackError: error => {
+    console.error('Could not load backpack art', error);
+    if (!backpackLoadErrorShown) {
+      backpackLoadErrorShown = true;
+      toast('Backpack art could not be loaded');
+    }
+  } });
 }
 let player = createCharacter(appearance);
-useAuthoredCharacter(player, appearance);
+useAuthoredCharacter(player, appearance, true);
 let handTorch = createHandTorch();
 attachHandTorch(player, handTorch.group);
 player.position.set(0, world.heightAt(0, 0), 5);
@@ -320,6 +380,15 @@ scene.add(npc);
 const vehicle = createVehicle();
 vehicle.position.set(8, world.heightAt(8, 4), 4);
 scene.add(vehicle);
+const roverController = getRoverVisual(vehicle);
+if (!roverController) throw new Error('Rover visual controller is unavailable');
+const roverVisual = roverController;
+const roverWheelKeys: RoverWheel[] = ['frontLeft', 'frontRight', 'rearLeft', 'rearRight'];
+const roverWheelPoints: RoverFour<{ x: number; z: number }> = {
+  frontLeft: { x: 0, z: 0 }, frontRight: { x: 0, z: 0 },
+  rearLeft: { x: 0, z: 0 }, rearRight: { x: 0, z: 0 },
+};
+const roverWheelGround: RoverFour<number> = { frontLeft: 0, frontRight: 0, rearLeft: 0, rearRight: 0 };
 let playerGeographic = planetPositionToGeographic(player.position.x, player.position.z, player.position.y);
 let vehicleGeographic = planetPositionToGeographic(vehicle.position.x, vehicle.position.z, vehicle.position.y);
 let npcGeographic = planetPositionToGeographic(npc.position.x, npc.position.z, npc.position.y);
@@ -352,13 +421,14 @@ const projectileGeometry = new THREE.IcosahedronGeometry(0.13, 1);
 const projectileMaterial = new THREE.MeshStandardMaterial({ color: '#cf9bee', emissive: '#854db3', emissiveIntensity: 1.5 });
 let wildlife: AnimalState[] = [];
 const animalModels = new Map<string, THREE.Group>();
+const previousAnimalPositions = new Map<string, GeographicPosition>();
 const npcState: NpcState = { recruited: false, job: 'idle', carrying: null };
 let health = 100;
 let attackCooldown = 0;
 let enemyHitCooldown = 0;
 let spawnCooldown = 0;
 let animationActionTime = 0;
-let animationAction: 'chop' | 'mine' | 'build' | 'attack' | 'hurt' = 'chop';
+let animationAction: 'chop' | 'mine' | 'build' | 'gather' | 'attack' | 'hurt' | 'saw' = 'chop';
 let buildMode = false;
 let buildKind: BuildKind = 'shelter';
 let buildGhost: THREE.Group | null = null;
@@ -366,7 +436,8 @@ let buildRotation = 0;
 let manualBuildOrientation = false;
 let buildLevel = 0;
 let autoRoof = true;
-let roofStyle: RoofStyle = 'flat';
+const newGameRoofStyle: RoofStyle = 'gable';
+let roofStyle: RoofStyle = newGameRoofStyle;
 let roofAxis: RoofAxis = 'auto';
 const pendingRoofs = new Map<string, RoofRequest>();
 const buildAim = new THREE.Vector2();
@@ -380,7 +451,6 @@ let grounded = true;
 let swimming = false;
 let waterContact = false;
 let rippleTimer = 0;
-type SelectedWeapon = 'fists' | 'stick' | 'axe' | 'stones';
 let selectedWeapon: SelectedWeapon = 'fists';
 let stones = 0;
 let pendingMelee: { target: THREE.Group | AnimalState; kind: 'enemy' | 'animal'; damage: number; time: number } | null = null;
@@ -389,11 +459,23 @@ if (import.meta.env.DEV) {
   Object.defineProperty(window, '__newDawnState', {
     value: () => ({
       player: { x: player.position.x, y: player.position.y, z: player.position.z, yaw: player.rotation.y },
+      vehicle: { x: vehicle.position.x, y: vehicle.position.y, z: vehicle.position.z,
+        yaw: vehicle.rotation.y, speed: vehicleSpeed, driving },
       runtimeFrame: { latitude: runtimeFrame.tangent.origin.latitude, longitude: runtimeFrame.tangent.origin.longitude },
-      cameraAngle, grounded, stones, selectedWeapon, animationAction, animationActionTime, lastStoneImpact,
+      cameraAngle, grounded, stones, selectedWeapon, animationAction, animationActionTime, attackCooldown, lastStoneImpact,
+      characterVisual: {
+        authored: Boolean(player.getObjectByName('authored-character')),
+        backpackBone: player.getObjectByName('survivor-backpack')?.parent?.name ?? null,
+        backpackVisible: player.getObjectByName('survivor-backpack')?.visible ?? false,
+        backpackEquipped,
+        heldTools: ['chop', 'mine', 'weapon', 'stick', 'saw'].filter(kind =>
+          (player.getObjectByName('authored-character') ?? player).getObjectByName(`tool-${kind}`)?.visible),
+        torch: handTorch.group.visible,
+      },
       cameraView: { pitch: cameraPitch, directionY: camera.getWorldDirection(new THREE.Vector3()).y,
         groundClearance: cameraGlobalPosition.y - world.heightAt(cameraGlobalPosition.x, cameraGlobalPosition.z) },
       swimming, waterContact, waterEffects: waterEffects.activeCount,
+      footprints: footprints.activeCount,
       impactEffects: effects.activeCount,
       lastImpactEffect: effects.lastImpact,
       health,
@@ -405,7 +487,8 @@ if (import.meta.env.DEV) {
         const point = world.resourceLocation(object);
         return { id: object.userData.resourceId as string, x: point.x, z: point.z,
           family: object.userData.vegetationFamily as string, species: object.userData.treeSpecies as string,
-          authored: object.userData.natureAuthored === true, variant: object.userData.natureVariant as string | undefined };
+          authored: object.userData.natureAuthored === true, variant: object.userData.natureVariant as string | undefined,
+          harvest: world.treeHarvestState(object), falling: world.isTreeFalling(object) };
       }),
       bushes: world.group.children.filter(object => object.userData.resource === 'food').map(object => {
         const point = world.resourceLocation(object);
@@ -432,6 +515,11 @@ if (import.meta.env.DEV) {
       projectiles: thrownStones.map(({ mesh, motion }) => ({ x: mesh.position.x, y: mesh.position.y, z: mesh.position.z, velocityY: motion.velocity.y })),
       enemyProjectiles: enemyProjectiles.map(({ mesh, remaining }) => ({ x: mesh.position.x, y: mesh.position.y, z: mesh.position.z, remaining })),
       enemies: enemies.map(enemy => ({ id: enemy.id, x: enemy.position.x, y: enemy.position.y, z: enemy.position.z, health: enemy.userData.health as number })),
+      wildlife: wildlife.map(animal => ({ id: animal.id, species: animal.species, x: animal.x, z: animal.z, health: animal.health,
+        heading: animal.heading, visualHeading: animalModels.get(animal.id)?.rotation.y ?? null,
+        behavior: animal.behavior, authored: Boolean(animalModels.get(animal.id)?.getObjectByName('authored-animal')),
+        animation: animalModels.get(animal.id)?.getObjectByName('authored-animal')?.userData.animation ?? null,
+        flightHeight: animal.species === 'bird' ? animalModels.get(animal.id)?.userData.flightHeight ?? 0 : null })),
       roads: roads.map(road => ({ id: road.id, x: road.x, z: road.z,
         modelX: roadModels.get(road.id)?.position.x, modelZ: roadModels.get(road.id)?.position.z })),
       paintMarkers: paintMarkers.children.map(marker => ({ pieceId: marker.userData.pieceId as string,
@@ -505,7 +593,7 @@ let paintBrush = 5;
 const atlasState: AtlasState = {
   explored: [],
   markers: [],
-  zoom: 4,
+  zoom: 1,
   centerLatitude: 0,
   centerLongitude: 0,
   level: 'world',
@@ -513,8 +601,38 @@ const atlasState: AtlasState = {
 let atlasMeasureStart: MapMarker | null = null;
 let driving = false;
 let vehicleSpeed = 0;
+let roverSteeringYaw = 0;
 let accelerateTouch = false;
 let brakeTouch = false;
+let structureCollisionDirty = true;
+let structureCollision = createStructureCollisionQuery(structures, buildingRecords);
+let collisionWarningAt = -Infinity;
+const wildlifeCollision = createWildlifeCollision({
+  animals: () => wildlife,
+  player: () => ({
+    body: { id: 'player', pose: { position: { x: player.position.x, z: player.position.z, geographic: playerGeographic },
+      bottomY: player.position.y }, radius: 0.35, height: 1.8 },
+    driving,
+  }),
+  rover: () => null,
+  groundY: (_animal, point) => world.heightAt(point.x, point.z),
+  flightHeight: id => animalModels.get(id)?.userData.flightHeight ?? 0,
+  obstacles: (query: CollisionQuery) => {
+    if (structureCollisionDirty) {
+      structureCollision = createStructureCollisionQuery(structures, buildingRecords);
+      structureCollisionDirty = false;
+    }
+    return combineCollisionQueries(query, world.collisionObstacles(query), structureCollision(query));
+  },
+});
+
+function reportCollisionUnavailable(reason: string) {
+  if (performance.now() - collisionWarningAt < 10000) return;
+  collisionWarningAt = performance.now();
+  console.warn(`Movement stopped: collision data ${reason}`);
+  toast('Collision area unavailable; movement stopped');
+}
+
 let paused = false;
 let updatePending = false;
 let pausedBeforeUpdate = false;
@@ -602,6 +720,7 @@ addEventListener('keydown', event => {
     }
     if (!document.querySelector('#updatePanel')!.classList.contains('hidden')) return;
     if (!document.querySelector('#atlasPanel')!.classList.contains('hidden')) { closeAtlas(); return; }
+    if (!document.querySelector('#toolHub')!.classList.contains('hidden')) { setToolHub(false); return; }
     if (!document.querySelector('#pausePanel')!.classList.contains('hidden')) togglePause();
     else if (!document.querySelector('#buildPanel')!.classList.contains('hidden') || buildMode) cancelBuild();
     else if (!document.querySelector('#craftPanel')!.classList.contains('hidden')) document.querySelector('#craftPanel')!.classList.add('hidden');
@@ -609,6 +728,10 @@ addEventListener('keydown', event => {
     else if (!document.querySelector('#npcPanel')!.classList.contains('hidden')) document.querySelector('#npcPanel')!.classList.add('hidden');
     else if (toolMode !== 'normal') exitToolModes();
     else if (performance.now() - lastPointerUnlock > 300) togglePause();
+    return;
+  }
+  if (event.code === 'KeyI' && gameStarted && !document.querySelector('#craftPanel')!.classList.contains('hidden')) {
+    document.querySelector('#craftPanel')!.classList.add('hidden');
     return;
   }
   if (!gameStarted || event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || gameplayBlocked()
@@ -635,6 +758,8 @@ const toolPointers = new Set<number>();
 let placementTouch: { id: number; x: number; y: number } | null = null;
 let rightDragDistance = 0;
 let leftClickStart: { x: number; y: number } | null = null;
+let gatherHint = 'gather';
+let gatherHintTimer = 0;
 function manualCamera() {
   manualCameraUntil = performance.now() + 2000;
   previousInput.set(0, 0);
@@ -645,11 +770,12 @@ function releasePointerLock() {
 function updateCameraHint(action?: string) {
   const hint = document.querySelector('#controlsHint')!;
   const text = document.pointerLockElement === canvas
-    ? 'MOUSE LOOK ACTIVE · Esc releases cursor · WASD move · E interact · B build'
+    ? 'MOUSE LOOK ACTIVE · Esc releases cursor · WASD move · E interact · Space gather · B build'
     : legacyCamera || pointerLockUnavailable
       ? 'Right-drag camera · WASD move · E interact · Space gather · B build'
       : 'Click world for mouse look · WASD move · E interact · Space gather · B build';
-  hint.textContent = action ? text.replace('E interact', `E ${action}`) : text;
+  const primary = text.replace('Space gather', `Space ${gatherHint}`);
+  hint.textContent = action ? primary.replace('E interact', `E ${action}`) : primary;
 }
 document.addEventListener('pointerlockchange', () => {
   if (document.pointerLockElement === canvas && (!gameStarted || gameplayBlocked() || buildMode || legacyCamera)) {
@@ -953,7 +1079,6 @@ document.querySelector<HTMLCanvasElement>('#minimap')!.addEventListener('keydown
   }
 });
 document.querySelector('[data-tool="build"]')!.addEventListener('click', toggleBuild);
-document.querySelector('[data-tool="axe"]')!.addEventListener('click', () => { if (buildMode) toggleBuild(); });
 document.querySelector('#rotateBuild')!.addEventListener('click', rotateBuild);
 document.querySelector('#floorDown')!.addEventListener('click', () => changeFloor(-1));
 document.querySelector('#floorUp')!.addEventListener('click', () => changeFloor(1));
@@ -1022,7 +1147,9 @@ const fogStartInput = document.querySelector<HTMLInputElement>('#fogStart')!;
 const fogEndInput = document.querySelector<HTMLInputElement>('#fogEnd')!;
 const graphicsQualityInput = document.querySelector<HTMLSelectElement>('#graphicsQuality')!;
 try {
-  const savedGraphics = JSON.parse(localStorage.getItem('new-dawn-graphics') ?? '{}') as { fogStart?: number; fogEnd?: number; quality?: string };
+  const savedGraphics = JSON.parse(localStorage.getItem('new-dawn-graphics') ?? '{}') as {
+    fogStart?: number; fogEnd?: number; quality?: string;
+  };
   fogStart = typeof savedGraphics.fogStart === 'number' ? savedGraphics.fogStart : fogStart;
   fogEnd = typeof savedGraphics.fogEnd === 'number' ? savedGraphics.fogEnd : fogEnd;
   graphicsQuality = savedGraphics.quality === 'low' || savedGraphics.quality === 'high' ? savedGraphics.quality : 'medium';
@@ -1097,7 +1224,6 @@ document.querySelector('#restartIntroduction')!.addEventListener('click', async 
 });
 document.querySelector('#returnMenu')!.addEventListener('click', () => location.reload());
 document.querySelector('#closeBuild')!.addEventListener('click', cancelBuild);
-document.querySelector('#atlasButton')!.addEventListener('click', showMap);
 document.querySelector('#closeAtlas')!.addEventListener('click', closeAtlas);
 document.querySelector('#atlasAddMarker')!.addEventListener('click', addAtlasMarker);
 document.querySelector('#atlasZoomIn')!.addEventListener('click', () => {
@@ -1158,8 +1284,8 @@ document.querySelector('#inventoryButton')!.addEventListener('click', () => {
     || !document.querySelector('#smelterPanel')!.classList.contains('hidden')) return;
   closeResourceDetails();
   releasePointerLock();
-  document.querySelector('#toolStatus')!.textContent = `Tools: ${tools.join(', ') || 'none'}`;
-  refreshTorchPanel();
+  setToolHub(false);
+  refreshEquipmentPanel();
   document.querySelector('#craftPanel')!.classList.toggle('hidden');
   if (!document.querySelector('#craftPanel')!.classList.contains('hidden') && onboarding.mode === 'guide' && !onboarding.openedPack) {
     onboarding.openedPack = true;
@@ -1175,32 +1301,36 @@ document.querySelector('#paintTool')!.addEventListener('click', enterPaintTool);
 document.querySelector('#terrainExit')!.addEventListener('click', exitToolModes);
 document.querySelector('#roadExit')!.addEventListener('click', exitToolModes);
 document.querySelector('#paintExit')!.addEventListener('click', exitToolModes);
-document.querySelector('#toolHubButton')!.addEventListener('click', () => {
-  const toolHub = document.querySelector('#toolHub')!;
-  const open = toolHub.classList.contains('hidden');
-  closeResourceDetails();
-  toolHub.classList.toggle('hidden', !open);
+function setToolHub(open: boolean) {
+  document.querySelector('#toolHub')!.classList.toggle('hidden', !open);
   document.querySelector('#hud')!.classList.toggle('tool-hub-open', open);
+  document.querySelector('#toolHubButton')!.setAttribute('aria-expanded', String(open));
+}
+document.querySelector('#toolHubButton')!.addEventListener('click', () => {
+  if (!gameStarted || gameplayBlocked() || driving || buildMode) return;
+  const open = document.querySelector('#toolHub')!.classList.contains('hidden');
+  closeResourceDetails();
+  releasePointerLock();
+  setToolHub(open);
 });
-document.querySelector('#closeToolHub')!.addEventListener('click', () => {
-  document.querySelector('#toolHub')!.classList.add('hidden');
-  document.querySelector('#hud')!.classList.remove('tool-hub-open');
-});
+document.querySelector('#closeToolHub')!.addEventListener('click', () => setToolHub(false));
 document.querySelectorAll<HTMLButtonElement>('[data-hub]').forEach(button => button.addEventListener('click', () => {
   const mode = button.dataset.hub!;
-  document.querySelector('#toolHub')!.classList.add('hidden');
-  document.querySelector('#hud')!.classList.remove('tool-hub-open');
+  if (mode === 'axe' && !tools.includes('axe')) {
+    toast('Craft an axe in Pack first');
+    return;
+  }
+  setToolHub(false);
   closeResourceDetails();
   if (mode === 'build') toggleBuild();
   else if (mode === 'road') enterRoadTool();
   else if (mode === 'terrain') enterTerrainTool();
   else if (mode === 'paint') enterPaintTool();
-  else if (mode === 'atlas') showMap();
-  else if (mode === 'torch') document.querySelector<HTMLButtonElement>('#inventoryButton')!.click();
   else {
     selectedWeapon = mode as SelectedWeapon;
     updateWeaponControl();
     toast(`${selectedWeapon === 'stones' ? 'Throwing stones' : selectedWeapon} selected`);
+    void saveGame(false);
   }
 }));
 document.querySelector('#resourceToggle')!.addEventListener('click', event => {
@@ -1254,10 +1384,15 @@ document.querySelectorAll<HTMLButtonElement>('[data-craft]').forEach(button => b
   if (tools.includes(tool)) { toast('Already crafted'); return; }
   if (!craftTool(resources, tools, tool)) { toast('Not enough resources'); return; }
   updateResources();
-  document.querySelector('#toolStatus')!.textContent = `Tools: ${tools.join(', ')}`;
   toast(`${tool} crafted`);
+  void saveGame(false);
 }));
-function refreshTorchPanel() {
+function refreshEquipmentPanel() {
+  const backpack = document.querySelector<HTMLButtonElement>('#equipBackpack')!;
+  backpack.setAttribute('aria-pressed', String(backpackEquipped));
+  backpack.querySelector('small')!.textContent = backpackEquipped ? 'Worn' : 'Not worn';
+  document.querySelector('#backpackStatus')!.textContent =
+    `Backpack: ${backpackEquipped ? 'worn' : 'not worn'}. Pack storage has no capacity limit yet.`;
   document.querySelector('#torchStatus')!.textContent = !torch.crafted ? 'Torch: not crafted'
     : !torch.equipped ? 'Torch: unequipped' : torch.lit ? 'Torch: equipped and burning' : 'Torch: equipped and extinguished';
   const craft = document.querySelector<HTMLButtonElement>('#craftTorch')!;
@@ -1266,25 +1401,34 @@ function refreshTorchPanel() {
   craft.disabled = torch.crafted;
   equip.disabled = !torch.crafted;
   ignite.disabled = !torch.equipped;
-  equip.textContent = torch.equipped ? 'UNEQUIP TORCH' : 'EQUIP TORCH';
-  ignite.textContent = torch.lit ? 'EXTINGUISH TORCH' : 'IGNITE TORCH';
+  equip.querySelector('strong')!.textContent = torch.equipped ? 'Unequip' : 'Equip';
+  ignite.querySelector('strong')!.textContent = torch.lit ? 'Extinguish' : 'Ignite';
+  equip.setAttribute('aria-pressed', String(torch.equipped));
+  ignite.setAttribute('aria-pressed', String(torch.lit));
 }
+document.querySelector('#equipBackpack')!.addEventListener('click', () => {
+  backpackEquipped = !backpackEquipped;
+  setAuthoredBackpackVisible(player, backpackEquipped);
+  refreshEquipmentPanel();
+  toast(backpackEquipped ? 'Backpack equipped' : 'Backpack unequipped');
+  void saveGame(false);
+});
 document.querySelector('#craftTorch')!.addEventListener('click', () => {
   if (!craftTorch(torch, resources, mineralInventory)) { toast('Need 2 wood and 1 coal'); return; }
   updateResources();
-  refreshTorchPanel();
+  refreshEquipmentPanel();
   toast('Torch crafted');
   void saveGame(false);
 });
 document.querySelector('#equipTorch')!.addEventListener('click', () => {
   if (!toggleTorchEquipment(torch)) { toast('Craft a torch first'); return; }
-  refreshTorchPanel();
+  refreshEquipmentPanel();
   toast(torch.equipped ? 'Torch equipped' : 'Torch unequipped');
   void saveGame(false);
 });
 document.querySelector('#igniteTorch')!.addEventListener('click', () => {
   if (!toggleTorchFlame(torch)) { toast('Equip a torch first'); return; }
-  refreshTorchPanel();
+  refreshEquipmentPanel();
   toast(torch.lit ? 'Torch lit' : 'Torch extinguished');
   void saveGame(false);
 });
@@ -1369,6 +1513,7 @@ catalog.forEach(item => {
 
 function resetWorld() {
   effects.reset();
+  footprints.reset();
   scene.remove(world.group);
   world.dispose();
   world = new World(seed, renderDistance, foliageAlphaCoverage);
@@ -1396,19 +1541,20 @@ function resetWorld() {
   postLightTimer = 0;
   postLights.forEach(light => { light.intensity = 0; });
   structures.length = 0;
+  structureCollisionDirty = true;
   pendingRoofs.clear();
   roads.splice(0, roads.length);
   surfacePaint.splice(0, surfacePaint.length);
   atlasState.explored.splice(0, atlasState.explored.length);
   atlasState.markers.splice(0, atlasState.markers.length);
-  atlasState.zoom = 4;
+  atlasState.zoom = 1;
   atlasState.centerLatitude = 0;
   atlasState.centerLongitude = 0;
   atlasState.level = 'world';
   refreshRoads();
   constructionRenderer.refresh(structures, surfacePaint);
   autoRoof = true;
-  roofStyle = 'flat';
+  roofStyle = newGameRoofStyle;
   roofAxis = 'auto';
   (document.querySelector('#autoRoof') as HTMLInputElement).checked = true;
   (document.querySelector('#roofStyle') as HTMLSelectElement).value = roofStyle;
@@ -1434,18 +1580,20 @@ function resetWorld() {
   document.querySelector('#smelterPanel')!.classList.add('hidden');
   tools.length = 0;
   Object.assign(torch, { crafted: false, equipped: false, lit: false });
+  backpackEquipped = true;
   stones = 0;
   selectedWeapon = 'fists';
-  Object.assign(npcState, { recruited: false, job: 'idle', carrying: null });
+  Object.assign(npcState, { recruited: false, job: 'idle', carrying: null, carryingAmount: undefined });
   health = 100;
   const spawn = safeSpawn(seed)!;
   resetWildlife(createWildlife(seed, spawn));
   npc.position.set(spawn.x - 4, world.heightAt(spawn.x - 4, spawn.z - 3), spawn.z - 3);
   npcGeographic = planetPositionToGeographic(npc.position.x, npc.position.z, npc.position.y);
   vehicle.position.set(spawn.x + 8, world.heightAt(spawn.x + 8, spawn.z - 1), spawn.z - 1);
+  vehicle.rotation.y = 0;
   vehicleGeographic = planetPositionToGeographic(vehicle.position.x, vehicle.position.z, vehicle.position.y);
   player = createCharacter(appearance);
-  useAuthoredCharacter(player, appearance);
+  useAuthoredCharacter(player, appearance, true);
   handTorch = createHandTorch();
   attachHandTorch(player, handTorch.group);
   player.position.set(spawn.x, world.heightAt(spawn.x, spawn.z), spawn.z);
@@ -1455,6 +1603,8 @@ function resetWorld() {
   cameraReady = false;
   driving = false;
   vehicleSpeed = 0;
+  roverSteeringYaw = 0;
+  updateRoverVisual(0, 0, 0, true);
   document.querySelector('#hud')!.classList.remove('driving');
   document.querySelector('#vehicleIndicator')!.classList.add('hidden');
   updateResources();
@@ -1501,6 +1651,7 @@ function togglePause() {
   if (!gameStarted || updatePending) return;
   paused = !paused;
   if (paused) {
+    setToolHub(false);
     releasePointerLock();
     document.querySelector('#npcPanel')!.classList.add('hidden');
     document.querySelector('#craftPanel')!.classList.add('hidden');
@@ -1749,6 +1900,7 @@ function gameplayBlocked() {
 function toggleBuild() {
   if (!gameStarted || driving || gameplayBlocked()) return;
   if (buildMode) { cancelBuild(); return; }
+  setToolHub(false);
   closeResourceDetails();
   releasePointerLock();
   buildMode = true;
@@ -1756,6 +1908,9 @@ function toggleBuild() {
   document.querySelector('#npcPanel')!.classList.add('hidden');
   document.querySelector('#hud')!.classList.add('building');
   document.querySelector('#actionA span')!.textContent = 'Place';
+  actionA.setAttribute('aria-label', 'Place building');
+  gatherHint = 'gather';
+  gatherHintTimer = 0;
   document.querySelector('#actionB span')!.textContent = 'Cancel';
   showBuildCatalog();
 }
@@ -1778,6 +1933,8 @@ function cancelBuild() {
   document.querySelector('#placementToolbar')!.classList.add('hidden');
   document.querySelector('#hud')!.classList.remove('building');
   document.querySelector('#actionA span')!.textContent = 'Gather';
+  actionA.setAttribute('aria-label', 'Primary action');
+  gatherHintTimer = 0;
   document.querySelector('#actionB span')!.textContent = 'Interact';
   removeGhost();
 }
@@ -1853,6 +2010,7 @@ function removeTargetPiece() {
     toast(piece.kind === 'windowframe' ? 'Remove the glass before its frame' : 'Remove the door before its frame');
     return;
   }
+  structureCollisionDirty = true;
   const removedId = piece.id;
   surfacePaint.splice(0, surfacePaint.length, ...surfacePaint.filter(paint => paint.pieceId !== removedId));
   refreshPaintMarkers();
@@ -2055,6 +2213,7 @@ function placeBuilding() {
     const piece = { ...selectedPiece(), id: newPieceId() };
     const replacing = Boolean(replacementTarget(piece, structures));
     if (!(replacing ? replacePiece(piece, structures, resources) : addPiece(piece, structures, resources))) { toast('Cannot place this piece'); return; }
+    structureCollisionDirty = true;
     if (piece.kind === 'window') ingots.glass--;
     const roofMessage = piece.kind === 'wall' || piece.kind === 'doorframe' || piece.kind === 'windowframe' ? reconcileRoofs(piece) : null;
     constructionRenderer.refresh(structures, surfacePaint);
@@ -2079,6 +2238,7 @@ function placeBuilding() {
   buildings.push(building);
   buildingRecords.push({ kind: buildKind, x: building.position.x, z: building.position.z, y: building.position.y, rotation: buildRotation, charge: 0, powered: false,
     ...(buildKind === 'torchpost' ? { id: newPieceId(), lit: false } : {}) });
+  structureCollisionDirty = true;
   postLightTimer = 0;
   effects.burst(building.position.clone().add(new THREE.Vector3(0, 0.3, 0)), 'build');
   updatePowerLines();
@@ -2089,21 +2249,28 @@ function placeBuilding() {
   saveGame(false);
 }
 
-const weaponIcons: Record<SelectedWeapon, string> = {
-  fists: '<path d="M5 11V8a2 2 0 0 1 4 0V6a2 2 0 0 1 4 0v1a2 2 0 0 1 4 0v2a2 2 0 0 1 3 2v4c0 3-2 5-5 5h-3c-3 0-5-2-6-4l-2-3a2 2 0 0 1 1-2Z"/><path d="M9 8v4m4-5v5m4-3v3"/>',
-  stick: '<path d="m6 20 8-15c1-2 4-2 5 0s-1 4-2 5L9 21Z"/><path d="m7 16 3 2m-4 0 3 2"/>',
-  axe: '<path d="m5 21 9-15 2 1L7 22Z"/><path d="M13 8 11 4c3 0 5-1 6-3 0 3 1 5 4 7l-4 3Z"/>',
-  stones: '<path d="m4 10 3-5 7-2 6 4 1 7-4 6-8 1-5-4Z"/><path d="m7 5 3 5-6 2m6-2 7 1 3-4m-3 4 0 9"/>',
-};
-
 function updateWeaponControl() {
-  document.querySelector('#weaponIcon')!.innerHTML = weaponIcons[selectedWeapon];
-  document.querySelector('#weaponLabel')!.textContent = selectedWeapon === 'stones' ? 'Stone' : selectedWeapon[0].toUpperCase() + selectedWeapon.slice(1);
+  document.querySelector('#weaponIcon')!.innerHTML = icons[selectedWeapon];
+  document.querySelector('#toolHubIcon')!.innerHTML = icons[selectedWeapon];
+  document.querySelector('#toolHubButton')!.setAttribute('aria-label', `Open tools, ${selectedWeapon} selected`);
+  document.querySelectorAll<HTMLButtonElement>('[data-hub][aria-pressed]').forEach(button => {
+    const selected = button.dataset.hub === selectedWeapon;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  });
+  const axe = document.querySelector<HTMLButtonElement>('[data-hub="axe"]')!;
+  const needsAxe = !tools.includes('axe');
+  axe.classList.toggle('needs-crafting', needsAxe);
+  axe.setAttribute('aria-label', needsAxe ? 'Axe, craft in Pack first' : 'Axe');
+  axe.querySelector('span')!.textContent = needsAxe ? 'Craft axe' : 'Axe';
+  document.querySelector('#weaponLabel')!.textContent = selectedWeapon === 'stones' ? 'Stone'
+    : selectedWeapon === 'saw' ? 'Attack' : selectedWeapon[0].toUpperCase() + selectedWeapon.slice(1);
   const ammo = document.querySelector<HTMLElement>('#weaponAmmo')!;
   ammo.textContent = String(stones);
   ammo.classList.toggle('hidden', selectedWeapon !== 'stones');
   document.querySelector('#weaponButton')!.setAttribute('aria-label',
-    selectedWeapon === 'stones' ? `Throw stone, ${stones} remaining` : `Attack with ${selectedWeapon}`);
+    selectedWeapon === 'stones' ? `Throw stone, ${stones} remaining`
+      : selectedWeapon === 'saw' ? 'Attack with saw; use primary action to saw' : `Attack with ${selectedWeapon}`);
   document.querySelector('#stoneHubCount')!.textContent = `Stones ${stones}`;
 }
 
@@ -2198,6 +2365,72 @@ function meleeAttack() {
   animationActionTime = 0.5;
 }
 
+function nearestGatherTarget() {
+  const deposit = world.findNearestDeposit(player.position.x, player.position.z, 3.2);
+  const natural = world.findNearest(player.position.x, player.position.z, 3.2);
+  if (deposit && (!natural || planetDistanceMeters(world.resourceLocation(deposit), player.position)
+    < world.resourceDistance(natural, player.position.x, player.position.z))) {
+    return { kind: 'deposit' as const, object: deposit };
+  }
+  return natural ? { kind: 'resource' as const, object: natural } : null;
+}
+
+const depositNames: Record<DepositKind, string> = {
+  stone: 'stone', clay: 'clay', sand: 'sand', coal: 'coal',
+  copperOre: 'copper ore', ironOre: 'iron ore', limestone: 'limestone',
+};
+
+function updateGatherHint(dt: number) {
+  gatherHintTimer -= dt;
+  if (gatherHintTimer > 0) return;
+  gatherHintTimer = 0.25;
+  const target = nearestGatherTarget();
+  let label = 'Gather';
+  let accessible = 'Primary action';
+  gatherHint = 'gather';
+  if (target?.kind === 'deposit') {
+    const mineral = target.object.userData.mineral as DepositKind;
+    const name = depositNames[mineral];
+    const needsPickaxe = requiresPickaxe(mineral) && !tools.includes('pickaxe');
+    const verb = requiresPickaxe(mineral) ? 'mine' : 'gather';
+    label = name[0].toUpperCase() + name.slice(1);
+    accessible = `${verb[0].toUpperCase()}${verb.slice(1)} ${name}${needsPickaxe ? ', pickaxe required' : ''}`;
+    gatherHint = needsPickaxe ? `${name} (pickaxe required)` : `${verb} ${name}`;
+  } else if (target?.object.userData.resource === 'wood') {
+    const tree = target.object;
+    const harvest = world.treeHarvestState(tree);
+    const name = harvest?.phase === 'logs' ? 'cut wood' : harvest?.phase === 'fallen' ? 'trunk' : 'tree';
+    if (harvest?.phase !== 'logs' && selectedWeapon !== 'saw') {
+      label = 'Saw needed';
+      accessible = `Saw ${name}, saw required`;
+      gatherHint = `saw ${name} (saw required)`;
+    } else if (world.resourceDistance(tree, player.position.x, player.position.z) >= TREE_WORK_REACH) {
+      label = 'Get closer';
+      accessible = `Move closer to ${name}`;
+      gatherHint = `move closer to ${name}`;
+    } else if (world.isTreeFalling(tree)) {
+      label = 'Wait';
+      accessible = 'Wait for tree to fall';
+      gatherHint = 'wait for tree to fall';
+    } else if (harvest?.phase === 'logs') {
+      label = 'Collect';
+      accessible = `Collect cut wood, ${harvest.remaining} remaining`;
+      gatherHint = `collect wood (${harvest.remaining} left)`;
+    } else {
+      label = harvest?.phase === 'fallen' ? 'Saw trunk' : 'Saw tree';
+      accessible = `Saw ${name}`;
+      gatherHint = `saw ${name}`;
+    }
+  }
+  if (enemies.some(item => worldDistance(item.position, player.position) < 2.8)
+    || wildlife.some(item => geographicDistanceMeters(item.geographic ?? planetPositionToGeographic(item.x, item.z), playerGeographic) < 2)) {
+    gatherHint = 'attack';
+  }
+  const actionLabel = actionA.querySelector('span')!;
+  if (actionLabel.textContent !== label) actionLabel.textContent = label;
+  if (actionA.getAttribute('aria-label') !== accessible) actionA.setAttribute('aria-label', accessible);
+}
+
 function gather(includeCombat = true) {
   if (!gameStarted || gameplayBlocked() || driving || buildMode) return;
   if (includeCombat && (enemies.some(item => worldDistance(item.position, player.position) < 2.8)
@@ -2205,12 +2438,10 @@ function gather(includeCombat = true) {
     meleeAttack();
     return;
   }
-  const deposit = world.findNearestDeposit(player.position.x, player.position.z, 3.2);
-  const natural = world.findNearest(player.position.x, player.position.z, 3.2);
-  if (deposit && (!natural || planetDistanceMeters(world.resourceLocation(deposit), player.position)
-    < planetDistanceMeters(world.resourceLocation(natural), player.position))) {
+  const target = nearestGatherTarget();
+  if (target?.kind === 'deposit') {
     if (attackCooldown > 0) return;
-    const result = world.mineDeposit(deposit, tools.includes('pickaxe'));
+    const result = world.mineDeposit(target.object, tools.includes('pickaxe'));
     if (!result) return;
     if (result.needsPickaxe) { toast('Craft a pickaxe to mine this deposit'); return; }
     attackCooldown = 0.6;
@@ -2222,6 +2453,38 @@ function gather(includeCombat = true) {
     if (result.mineral === 'stone') resources.stone += amount;
     else mineralInventory[result.mineral] += amount;
     toast(`+${amount} ${result.mineral} · ${result.progress}/3`);
+    updateResources();
+    updateObjective();
+    void saveGame(false);
+    return;
+  }
+  const natural = target?.object;
+  if (natural?.userData.resource === 'wood') {
+    if (attackCooldown > 0) return;
+    const result = world.workTree(natural, selectedWeapon === 'saw', player.position);
+    if (!result) return;
+    if (result.kind === 'needs-saw') { toast('Select the starter saw in Tools to cut trees'); return; }
+    if (result.kind === 'out-of-reach') { toast('Move closer to the tree or logs'); return; }
+    if (result.kind === 'falling') { toast('Wait for the tree to fall'); return; }
+    if (result.kind === 'limit') { toast('Collect some cut wood before starting another tree'); return; }
+    const target = nearestPlanetPosition(result.position.x, result.position.z, player.position.x, player.position.z);
+    if (Math.hypot(target.x - player.position.x, target.z - player.position.z) > 0.01) {
+      player.rotation.y = Math.atan2(target.x - player.position.x, target.z - player.position.z);
+    }
+    attackCooldown = 0.75;
+    animationAction = result.kind === 'collected' ? 'gather' : 'saw';
+    animationActionTime = 0.75;
+    if (result.kind !== 'collected') player.userData.sawTarget = result.position.clone();
+    if (result.kind !== 'collected') effects.burst(result.position, 'wood');
+    if (result.kind === 'felling') toast(`Sawing tree · ${result.progress}/3`);
+    else if (result.kind === 'felled') toast('Tree falling · saw the trunk when it lands');
+    else if (result.kind === 'sawing') toast(`Sawing trunk · ${result.progress}/2`);
+    else if (result.kind === 'cut') toast(`Trunk cut · collect ${result.total} wood`);
+    else {
+      resources.wood += result.amount;
+      onboarding.gathered = true;
+      toast(`+${result.amount} wood · ${result.remaining} left`);
+    }
     updateResources();
     updateObjective();
     void saveGame(false);
@@ -2272,6 +2535,8 @@ function interact() {
     document.querySelector('#vehicleIndicator')!.classList.add('hidden');
     document.querySelector('#exitVehicle')!.classList.add('hidden');
     document.querySelector('#actionA span')!.textContent = 'Gather';
+    actionA.setAttribute('aria-label', 'Primary action');
+    gatherHintTimer = 0;
     document.querySelector('#actionB span')!.textContent = 'Interact';
     toast('Exited vehicle');
     return;
@@ -2290,6 +2555,7 @@ function interact() {
       return;
     }
     door.piece.open = !door.piece.open;
+    structureCollisionDirty = true;
     toast(door.piece.open ? 'Door opened' : 'Door closed');
     void saveGame(false);
     return;
@@ -2316,6 +2582,9 @@ function interact() {
     document.querySelector('#vehicleIndicator')!.classList.remove('hidden');
     document.querySelector('#exitVehicle')!.classList.remove('hidden');
     document.querySelector('#actionA span')!.textContent = 'Drive';
+    actionA.setAttribute('aria-label', 'Accelerate');
+    gatherHint = 'gather';
+    gatherHintTimer = 0;
     document.querySelector('#actionB span')!.textContent = 'Brake';
     toast('Driving rover');
   } else if (worldDistance(npc.position, player.position) < 3) {
@@ -2339,7 +2608,22 @@ function updateResources() {
     `<div><b>🌲</b><span>${resources.wood}</span></div><div><b>◆</b><span>${resources.stone}</span></div><div><b>◒</b><span>${resources.food}</span></div><div><b>💧</b><span>${resources.water}</span></div>`;
   document.querySelector('#resourceSummary')!.textContent = `🌲 ${resources.wood} · ◆ ${resources.stone}`;
   (document.querySelector('#healthBar') as HTMLElement).style.width = `${health}%`;
-  document.querySelector('#mineralInventory')!.textContent = `Minerals: clay ${mineralInventory.clay} · sand ${mineralInventory.sand} · coal ${mineralInventory.coal} · copper ore ${mineralInventory.copperOre} · iron ore ${mineralInventory.ironOre} · limestone ${mineralInventory.limestone} · iron ingots ${ingots.iron} · copper ingots ${ingots.copper} · glass ${ingots.glass}${ironPickaxe ? ' · iron pickaxe' : ''}`;
+  const item = (name: string, count: number, image: IconName) =>
+    `<div class="pack-item">${icon(image)}<span>${name} <b>${count}</b></span></div>`;
+  document.querySelector('#basicInventory')!.innerHTML =
+    item('wood', resources.wood, 'wood') + item('stone', resources.stone, 'stone')
+    + item('food', resources.food, 'food') + item('water', resources.water, 'water');
+  document.querySelector('#mineralInventory')!.innerHTML =
+    item('clay', mineralInventory.clay, 'mineral') + item('sand', mineralInventory.sand, 'mineral')
+    + item('coal', mineralInventory.coal, 'mineral') + item('copper ore', mineralInventory.copperOre, 'mineral')
+    + item('iron ore', mineralInventory.ironOre, 'mineral') + item('limestone', mineralInventory.limestone, 'mineral')
+    + item('iron ingots', ingots.iron, 'ingot') + item('copper ingots', ingots.copper, 'ingot')
+    + item('glass', ingots.glass, 'glass') + (ironPickaxe ? item('iron pickaxe', 1, 'pickaxe') : '');
+  document.querySelector('#toolStatus')!.textContent = `Tools: saw${tools.length ? `, ${tools.join(', ')}` : ''}`;
+  document.querySelectorAll<HTMLButtonElement>('[data-craft]').forEach(button => {
+    button.disabled = tools.includes(button.dataset.craft as Tool);
+  });
+  refreshEquipmentPanel();
 }
 
 function closeResourceDetails() {
@@ -2347,21 +2631,74 @@ function closeResourceDetails() {
   document.querySelector('#resourceToggle')!.setAttribute('aria-expanded', 'false');
 }
 
+const panelNotification = document.createElement('div');
+panelNotification.id = 'panelNotification';
+panelNotification.className = 'panel-notification';
+panelNotification.setAttribute('role', 'status');
+panelNotification.setAttribute('aria-live', 'polite');
+panelNotification.setAttribute('aria-atomic', 'true');
+let lastUiAction: Element | null = null;
+document.addEventListener('click', event => {
+  lastUiAction = event.target instanceof Element ? event.target.closest('button') : null;
+}, true);
+let notificationHost: HTMLElement | null = null;
+const notificationObserver = new MutationObserver(() => {
+  if (panelNotification.closest('.hidden') || (notificationHost && getComputedStyle(notificationHost).display === 'none')) {
+    panelNotification.remove();
+    notificationObserver.disconnect();
+    notificationHost = null;
+  }
+});
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+
 function toast(message: string) {
   const element = document.querySelector('#toast')!;
   element.textContent = message;
   element.classList.add('visible');
-  clearTimeout((toast as any)._timer);
-  (toast as any)._timer = setTimeout(() => element.classList.remove('visible'), 1800);
+  const surfaces = [
+    '.update-panel:not(.hidden)',
+    '.atlas-panel:not(.hidden) .atlas-controls',
+    '.tool-hub:not(.hidden)',
+    '.performance-monitor:not(.hidden)',
+    '.character-panel:not(.hidden) .character-options',
+    '.screen.active .menu-card',
+    '.panel:not(.hidden)',
+    '.placement-toolbar:not(.hidden)',
+    '.tool-toolbar:not(.hidden)',
+  ];
+  const activeSurface = surfaces.map(selector => document.querySelector<HTMLElement>(selector))
+    .find(surface => surface && getComputedStyle(surface).display !== 'none');
+  notificationObserver.disconnect();
+  if (activeSurface) {
+    panelNotification.textContent = '';
+    const action = lastUiAction?.closest('.pack-grid, .build-actions, .tool-hub-grid, .floor-controls, .roof-controls, .placement-buttons, .tool-actions, .paint-presets, .performance-monitor > div, .update-panel > div') ?? lastUiAction;
+    const hubHeader = activeSurface.matches('.tool-hub') ? activeSurface.querySelector('header') : null;
+    if (hubHeader) hubHeader.insertBefore(panelNotification, hubHeader.querySelector('button'));
+    else if (action && activeSurface.contains(action)) action.insertAdjacentElement('afterend', panelNotification);
+    else activeSurface.prepend(panelNotification);
+    panelNotification.textContent = message;
+    panelNotification.scrollIntoView({ block: 'nearest' });
+    notificationHost = activeSurface.closest<HTMLElement>('.atlas-panel, .character-panel, .screen') ?? activeSurface;
+    notificationObserver.observe(notificationHost, { attributes: true, attributeFilter: ['class'] });
+  } else {
+    panelNotification.remove();
+    notificationHost = null;
+  }
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    element.classList.remove('visible');
+    panelNotification.remove();
+    notificationObserver.disconnect();
+    notificationHost = null;
+  }, Math.max(1800, Math.min(6000, message.length * 80)));
 }
 
 function showMap() {
   if (!gameStarted || gameplayBlocked()) return;
   closeResourceDetails();
+  setToolHub(false);
   releasePointerLock();
-  atlasState.centerLatitude = playerGeographic.latitude;
-  atlasState.centerLongitude = playerGeographic.longitude;
-  const tile = hierarchicalTileId(atlasState.centerLatitude, atlasState.centerLongitude, 4);
+  const tile = hierarchicalTileId(playerGeographic.latitude, playerGeographic.longitude, 4);
   if (!atlasState.explored.includes(tile)) atlasState.explored.push(tile);
   document.querySelector('#atlasPanel')!.classList.remove('hidden');
   drawAtlas();
@@ -2370,6 +2707,30 @@ function showMap() {
 
 function atlasPosition() {
   return { ...playerGeographic, altitude: world.heightAt(player.position.x, player.position.z) };
+}
+
+const atlasRaster = document.createElement('canvas');
+atlasRaster.width = 360;
+atlasRaster.height = 180;
+let atlasRasterSeed: number | undefined;
+
+function atlasImage() {
+  if (atlasRasterSeed === seed) return atlasRaster;
+  const context = atlasRaster.getContext('2d')!;
+  const image = context.createImageData(atlasRaster.width, atlasRaster.height);
+  for (let latitude = -90; latitude < 90; latitude++) {
+    for (let longitude = -180; longitude < 180; longitude++) {
+      const color = Number.parseInt(atlasBiomeColors[atlasBiomeAtCell(latitude, longitude, seed)].slice(1), 16);
+      const index = ((89 - latitude) * atlasRaster.width + longitude + 180) * 4;
+      image.data[index] = color >> 16;
+      image.data[index + 1] = (color >> 8) & 255;
+      image.data[index + 2] = color & 255;
+      image.data[index + 3] = 255;
+    }
+  }
+  context.putImageData(image, 0, 0);
+  atlasRasterSeed = seed;
+  return atlasRaster;
 }
 
 function drawAtlas() {
@@ -2387,33 +2748,19 @@ function drawAtlas() {
   const zoom = atlasState.zoom;
   const viewWidth = 360 / zoom;
   const viewHeight = 180 / zoom;
-  const exploredTiles = new Set(atlasState.explored);
   const project = (latitude: number, longitude: number) => ({
-    x: ((longitude - (atlasState.centerLongitude - viewWidth / 2)) / viewWidth) * width,
+    x: ((((longitude - atlasState.centerLongitude + 180) % 360 + 360) % 360 - 180) / viewWidth + 0.5) * width,
     y: ((atlasState.centerLatitude + viewHeight / 2 - latitude) / viewHeight) * height,
   });
 
   ctx.save();
-  ctx.beginPath();
-  ctx.rect(0, 0, width, height);
-  ctx.clip();
-  for (let latIndex = -90; latIndex < 90; latIndex++) {
-    for (let lonIndex = -180; lonIndex < 180; lonIndex++) {
-      const longitude = lonIndex + 0.5;
-      const latitude = latIndex + 0.5;
-      if (longitude < atlasState.centerLongitude - viewWidth / 2 - 2
-        || longitude > atlasState.centerLongitude + viewWidth / 2 + 2
-        || latitude < atlasState.centerLatitude - viewHeight / 2 - 2
-        || latitude > atlasState.centerLatitude + viewHeight / 2 + 2) continue;
-      const tile = hierarchicalTileId(latitude, longitude, 4);
-      const explored = exploredTiles.has(tile);
-      if (!explored) continue;
-      const point = project(latitude, longitude);
-      const sizeX = width / viewWidth * 1.1;
-      const sizeY = height / viewHeight * 1.1;
-      ctx.fillStyle = atlasBiomeColors[atlasBiomeAtCell(latIndex, lonIndex, seed)];
-      ctx.fillRect(point.x - sizeX / 2, point.y - sizeY / 2, sizeX, sizeY);
-    }
+  ctx.imageSmoothingEnabled = false;
+  const mapWidth = width * zoom;
+  const mapHeight = height * zoom;
+  const top = ((atlasState.centerLatitude + viewHeight / 2 - 90) / viewHeight) * height;
+  for (const shift of [-360, 0, 360]) {
+    const left = ((-180 + shift - atlasState.centerLongitude + viewWidth / 2) / viewWidth) * width;
+    if (left < width && left + mapWidth > 0) ctx.drawImage(atlasImage(), left, top, mapWidth, mapHeight);
   }
   ctx.restore();
 
@@ -2430,11 +2777,10 @@ function drawAtlas() {
     ctx.stroke();
   }
   for (let lat = -60; lat <= 60; lat += 30) {
-    const a = project(lat, -180);
-    const b = project(lat, 180);
+    const y = project(lat, 0).y;
     ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
     ctx.stroke();
   }
   ctx.restore();
@@ -2797,6 +3143,7 @@ function projectWorldEntities() {
     constructionRenderer.refresh(structures, surfacePaint);
     refreshPaintMarkers();
   }
+  if (powerLinesChanged || structuresChanged) structureCollisionDirty = true;
   let roadsChanged = false;
   for (const road of roads) {
     const point = nearestPlanetPosition(road.x, road.z, player.position.x, player.position.z);
@@ -2815,6 +3162,30 @@ function projectWorldEntities() {
       model.rotation.y = road.rotation;
     }
   }
+}
+
+function roverSurfaceAt(x: number, z: number, referenceY: number) {
+  let surface = floorSurface(structures, x, z, referenceY, world.heightAt(x, z));
+  for (const road of roads) {
+    const height = road.height + 0.035;
+    if (Math.abs(x - road.x) <= 1 && Math.abs(z - road.z) <= 1
+      && height <= referenceY + 0.55 && height > surface) surface = height;
+  }
+  return surface;
+}
+
+function updateRoverVisual(dt: number, signedTravel: number, steeringTurn: number, reset = false) {
+  const pose = { x: vehicle.position.x, y: vehicle.position.y, z: vehicle.position.z, yaw: vehicle.rotation.y };
+  roverWheelSamplePoints(pose, roverWheelPoints);
+  for (const key of roverWheelKeys) {
+    const point = roverWheelPoints[key];
+    roverWheelGround[key] = roverSurfaceAt(point.x, point.z, pose.y);
+  }
+  if (reset) roverVisual.reset(pose, roverWheelGround);
+  else roverVisual.update({
+    pose, wheelGroundY: roverWheelGround, steeringYawRad: roverSteeringYaw,
+    steeringTurnRad: steeringTurn, signedProjectedTravel: signedTravel, speedMps: vehicleSpeed, dt,
+  });
 }
 
 function projectGeographicPosition(position: GeographicPosition, reference: THREE.Vector3) {
@@ -2931,7 +3302,7 @@ function updateGame(dt: number) {
       : weatherBase;
   document.querySelector('#seasonText')!.textContent = `${season.toUpperCase()} · DAY ${day} · ${weather.toUpperCase()}`;
   world.setSeason(season);
-  precipitation.update(weather, driving ? vehicle.position : player.position, dt, constructionRenderer.shelter);
+  precipitation.update(weather, driving ? vehicle.position : player.position, dt, constructionRenderer.shelter, wind);
   const shelterPosition = driving ? vehicle.position : player.position;
   const shelter = constructionRenderer.shelter.status(shelterPosition.x, shelterPosition.y, shelterPosition.z);
   const shelterStatus = document.querySelector<HTMLElement>('#shelterStatus')!;
@@ -2957,6 +3328,8 @@ function updateGame(dt: number) {
   if (scene.fog instanceof THREE.Fog && scene.background instanceof THREE.Color) scene.fog.color.copy(scene.background);
 
   let actualMovement = 0;
+  let roverTravel = 0;
+  let roverTurn = 0;
   let inputX = gameplayBlocked() ? 0 : move.x;
   let inputZ = gameplayBlocked() ? 0 : move.y;
   if (!gameplayBlocked()) {
@@ -2969,33 +3342,38 @@ function updateGame(dt: number) {
   const speed = keys.has('ShiftLeft') ? 6.5 : 4;
   if (driving) {
     const throttle = !gameplayBlocked() && accelerateTouch ? 1 : !gameplayBlocked() && brakeTouch ? -1 : -inputZ;
-    vehicleSpeed = THREE.MathUtils.clamp(vehicleSpeed + throttle * 5 * dt, -2.5, 6);
-    if (Math.abs(throttle) < 0.08) vehicleSpeed *= Math.exp(-1.5 * dt);
-    if (Math.abs(vehicleSpeed) > 0.1) vehicle.rotation.y -= inputX * Math.sign(vehicleSpeed) * 1.5 * dt;
-    const dx = Math.cos(vehicle.rotation.y);
-    const dz = -Math.sin(vehicle.rotation.y);
+    const proposal = proposeRoverDrive({ speedMps: vehicleSpeed, steerYawRad: roverSteeringYaw },
+      { throttle, steer: inputX }, dt);
+    const proposedYaw = vehicle.rotation.y + proposal.turnRad;
+    const dx = Math.cos(proposedYaw);
+    const dz = -Math.sin(proposedYaw);
     const headingBearing = Math.atan2(dx, dz) * 180 / Math.PI;
     let transportedHeading = headingBearing;
-    const travelBearing = headingBearing + (vehicleSpeed < 0 ? 180 : 0);
+    const travelBearing = headingBearing + (proposal.signedMeters < 0 ? 180 : 0);
     const oldVehicleGeographic = vehicleGeographic;
-    const nextPosition = runtimeFrame.move(vehicle.position, oldVehicleGeographic, travelBearing, Math.abs(vehicleSpeed) * dt);
+    const nextPosition = runtimeFrame.move(vehicle.position, oldVehicleGeographic, travelBearing, Math.abs(proposal.signedMeters));
     const nextGeographic = nextPosition.geographic;
     const nextX = nextPosition.x;
     const nextZ = nextPosition.z;
-    const blocked = buildingRecords.some(b => Math.hypot(nextX - b.x, nextZ - b.z) < (b.kind === 'shelter' ? 2.4 : 1.8))
+    const nextY = roverSurfaceAt(nextX, nextZ, vehicle.position.y);
+    transportedHeading = transportBearing(oldVehicleGeographic, nextGeographic, headingBearing);
+    const blocked = world.heightAt(nextX, nextZ) <= -0.5
+      || buildingRecords.some(b => Math.hypot(nextX - b.x, nextZ - b.z) < (b.kind === 'shelter' ? 2.4 : 1.8))
       || structures.some(piece => pieceBlocks(piece, nextX, vehicle.position.y, nextZ, 1));
-    if (!blocked && world.heightAt(nextX, nextZ) > -0.5) {
+    if (!blocked) {
+      roverTravel = Math.hypot(nextX - vehicle.position.x, nextZ - vehicle.position.z) * Math.sign(proposal.signedMeters);
+      roverTurn = proposal.turnRad;
       vehicle.position.x = nextX;
       vehicle.position.z = nextZ;
-      vehicle.position.y = world.heightAt(nextX, nextZ);
+      vehicle.position.y = nextY;
       vehicleGeographic = { ...nextGeographic, altitude: vehicle.position.y };
-      transportedHeading = transportBearing(oldVehicleGeographic, nextGeographic, headingBearing);
       vehicle.rotation.y = THREE.MathUtils.degToRad(transportedHeading) - Math.PI / 2;
       cameraAngle = transportCameraAngle(cameraAngle, oldVehicleGeographic, nextGeographic);
       movementBasis = transportCameraAngle(movementBasis, oldVehicleGeographic, nextGeographic);
-    } else vehicleSpeed = 0;
-    const wheels = vehicle.userData.wheels as THREE.Mesh[];
-    wheels.forEach(wheel => wheel.rotateY(vehicleSpeed * dt / 0.32));
+    }
+    const committed = commitRoverDrive(proposal, blocked);
+    vehicleSpeed = committed.speedMps;
+    roverSteeringYaw = committed.steerYawRad;
     document.querySelector('#vehicleIndicator')!.textContent = `SPEED ${Math.abs(vehicleSpeed).toFixed(1)}`;
     if (cameraSettings.autoFollow && Math.abs(vehicleSpeed) > 0.15 && performance.now() > manualCameraUntil) {
       cameraAngle = dampAngle(cameraAngle, THREE.MathUtils.degToRad(transportedHeading) + Math.PI, 2.2, dt);
@@ -3015,24 +3393,38 @@ function updateGame(dt: number) {
     const target = player;
     const moveBearing = Math.atan2(dx, dz) * 180 / Math.PI;
     const nextPosition = runtimeFrame.move(target.position, playerGeographic, moveBearing, speed * Math.min(1, length) * dt);
-    const nextGeographic = nextPosition.geographic;
     const nextX = nextPosition.x;
     const nextZ = nextPosition.z;
     const collides = buildingRecords.some(b => Math.hypot(nextX - b.x, nextZ - b.z) < (b.kind === 'shelter' ? 2 : b.kind === 'storage' ? 1.6 : 1))
       || structures.some(piece => pieceBlocks(piece, nextX, target.position.y, nextZ));
     if (!collides && world.heightAt(nextX, nextZ) > -0.5) {
-      target.position.x = nextX;
-      target.position.z = nextZ;
-      const oldGeographic = playerGeographic;
-      const transportedMoveBearing = transportBearing(oldGeographic, nextGeographic, moveBearing);
-      cameraAngle = transportCameraAngle(cameraAngle, oldGeographic, nextGeographic);
-      movementBasis = transportCameraAngle(movementBasis, oldGeographic, nextGeographic);
-      target.rotation.y = dampAngle(transportCharacterYaw(target.rotation.y, oldGeographic, nextGeographic),
-        THREE.MathUtils.degToRad(transportedMoveBearing), 10, dt);
-      playerGeographic = { ...nextGeographic, altitude: world.heightAt(nextX, nextZ) };
-      actualMovement = length;
-      if (!buildMode && document.pointerLockElement !== canvas && cameraSettings.autoFollow && performance.now() > manualCameraUntil) {
-        cameraAngle = dampAngle(cameraAngle, THREE.MathUtils.degToRad(transportedMoveBearing) + Math.PI, 2.2, dt);
+      const nextY = grounded
+        ? floorSurface(structures, nextX, nextZ, target.position.y, world.heightAt(nextX, nextZ))
+        : target.position.y;
+      const result = wildlifeCollision.moveBody({
+        body: wildlifeCollision.playerBody(), to: { position: nextPosition, bottomY: nextY }, dt,
+        // Retain legacy player/world collision until projected polar resource density is resolved.
+        includeStatic: false,
+        canOccupy: point => world.heightAt(point.x, point.z) > -0.5,
+      });
+      if (result.status === 'incomplete') reportCollisionUnavailable(result.reason ?? 'unavailable');
+      if (result.status !== 'incomplete' && result.travelledM > 1e-5) {
+        const position = result.pose.position;
+        const oldGeographic = playerGeographic;
+        const resolvedGeographic = position.geographic ?? planetPositionToGeographic(position.x, position.z);
+        const resolvedBearing = result.status === 'slid' ? geographicBearing(oldGeographic, resolvedGeographic) : moveBearing;
+        const transportedMoveBearing = transportBearing(oldGeographic, resolvedGeographic, resolvedBearing);
+        target.position.x = position.x;
+        target.position.z = position.z;
+        cameraAngle = transportCameraAngle(cameraAngle, oldGeographic, resolvedGeographic);
+        movementBasis = transportCameraAngle(movementBasis, oldGeographic, resolvedGeographic);
+        target.rotation.y = dampAngle(transportCharacterYaw(target.rotation.y, oldGeographic, resolvedGeographic),
+          THREE.MathUtils.degToRad(transportedMoveBearing), 10, dt);
+        playerGeographic = { ...resolvedGeographic, altitude: world.heightAt(position.x, position.z) };
+        actualMovement = length;
+        if (!buildMode && document.pointerLockElement !== canvas && cameraSettings.autoFollow && performance.now() > manualCameraUntil) {
+          cameraAngle = dampAngle(cameraAngle, THREE.MathUtils.degToRad(transportedMoveBearing) + Math.PI, 2.2, dt);
+        }
       }
     }
     if (grounded) target.position.y = floorSurface(structures, target.position.x, target.position.z, target.position.y, world.heightAt(target.position.x, target.position.z));
@@ -3067,6 +3459,11 @@ function updateGame(dt: number) {
   }
   const waterFloor = floorSurface(structures, player.position.x, player.position.z, player.position.y,
     world.heightAt(player.position.x, player.position.z));
+  footprints.update(dt, player.position, !driving && grounded && !swimming && !gameplayBlocked(), (x, z) => {
+    const height = world.heightAt(x, z);
+    if (floorSurface(structures, x, z, player.position.y, height) > height + 0.05) return undefined;
+    return footprintSurface(biomeAt(x, z, seed), season, weather, height);
+  }, (x, z) => world.heightAt(x, z));
   const touchingWater = !driving && swimming && player.position.y <= 0.65 && waterFloor < -0.08;
   rippleTimer = Math.max(0, rippleTimer - dt);
   if (touchingWater && !waterContact) {
@@ -3086,17 +3483,18 @@ function updateGame(dt: number) {
   rebaseWorld();
   world.updateChunks(player.position.x, player.position.z);
   projectWorldEntities();
+  updateRoverVisual(dt, roverTravel, roverTurn);
   constructionRenderer.update(dt, player.position, cameraGlobalPosition, renderOrigin);
 
   const elapsed = performance.now();
   updateNpc(dt);
   updateWildlife(wildlife, dt, seed, {
     x: player.position.x, z: player.position.z, geographic: playerGeographic,
-  }, (x, z) => world.heightAt(x, z), damage => {
-    if (!driving) damagePlayer(damage, 'A wolf attacked!');
+  }, (x, z) => world.heightAt(x, z), (damage, predator) => {
+    if (!driving) damagePlayer(damage, `A ${predator} attacked!`);
   }, (position, bearing, distance, geographic) => runtimeFrame.move(position,
-    geographic ?? planetPositionToGeographic(position.x, position.z), bearing, distance));
-  updateAnimalModels(elapsed);
+    geographic ?? planetPositionToGeographic(position.x, position.z), bearing, distance), wildlifeCollision);
+  updateAnimalModels(elapsed, dt);
 
   buildings.forEach(building => {
     if (building.userData.building === 'turbine') {
@@ -3229,9 +3627,8 @@ function updateGame(dt: number) {
   handTorch.group.visible = torch.equipped && !driving;
   handTorch.fire.visible = torch.lit;
   const fireTime = elapsed / 1000;
-  handTorch.light.intensity = torch.lit && !driving ? 26 + Math.sin(fireTime * 9) * 1.8 : 0;
-  handTorch.fire.scale.y = 1 + Math.sin(fireTime * 8) * 0.1;
-  handTorch.fire.rotation.z = wind * 0.07;
+  updateFireAnimation(fireTime, wind);
+  handTorch.light.intensity = torch.lit && !driving ? fireLightIntensity(fireTime) : 0;
   postLightTimer -= dt;
   if (postLightTimer <= 0) {
     const posts = buildingRecords.filter(isTorchPost);
@@ -3252,11 +3649,12 @@ function updateGame(dt: number) {
     const post = visiblePostLights[index];
     if (!post || !post.lit) { light.intensity = 0; return; }
     light.position.set(post.x, post.y + 1.95, post.z);
-    light.intensity = 26 + Math.sin(fireTime * 8 + index * 2) * 1.6;
+    light.intensity = fireLightIntensity(fireTime, index * 2);
     sparks.push(light.position);
   });
   fireSparks.update(sparks, fireTime, wind);
   if (!driving && !buildMode) {
+    updateGatherHint(dt);
     const post = nearestPost();
     const closestDoor = structures.filter(piece => piece.kind === 'door' && Math.abs(piece.y - player.position.y) < 2)
       .reduce((distance, piece) => Math.min(distance, planetDistanceMeters(piece, player.position)), Infinity);
@@ -3278,6 +3676,7 @@ function removeAnimal(id: string) {
   scene.remove(model);
   disposeAnimal(model);
   animalModels.delete(id);
+  previousAnimalPositions.delete(id);
 }
 
 function resetWildlife(states: AnimalState[]) {
@@ -3285,22 +3684,41 @@ function resetWildlife(states: AnimalState[]) {
   wildlife = states.map(animal => ({ ...animal }));
   for (const animal of wildlife) {
     const model = createAnimal(animal.species, Number(animal.id.split('-')[1]));
+    attachAuthoredAnimal(model, animal.species, Number(animal.id.split('-')[1]));
+    model.rotation.y = animal.heading;
     animalModels.set(animal.id, model);
     scene.add(model);
   }
-  updateAnimalModels(performance.now());
+  updateAnimalModels(performance.now(), 0);
 }
 
-function updateAnimalModels(time: number) {
+function updateAnimalModels(time: number, dt: number) {
   const live = new Set(wildlife.map(animal => animal.id));
   for (const id of animalModels.keys()) if (!live.has(id)) removeAnimal(id);
   for (const animal of wildlife) {
     const model = animalModels.get(animal.id);
     if (!model) continue;
     const flying = animal.species === 'bird' && animal.behavior === 'fly';
-    model.position.set(animal.x, world.heightAt(animal.x, animal.z) + (flying ? 2.5 + Math.sin(time * 0.002) * 0.3 : 0), animal.z);
-    model.rotation.y = animal.heading;
-    animateAnimal(model, animal.species, animal.behavior !== 'rest', time);
+    let flightHeight = 0;
+    if (animal.species === 'bird') {
+      const previous = typeof model.userData.flightHeight === 'number' ? model.userData.flightHeight : flying ? 2.5 : 0;
+      flightHeight = updateBirdFlightHeight(previous, flying, dt);
+      model.userData.flightHeight = flightHeight;
+    }
+    const flightMotion = animal.species === 'bird' && (flying || flightHeight > 0.2);
+    const bob = Math.sin(time * 0.002) * 0.3 * Math.min(1, flightHeight / 2.5);
+    model.position.set(animal.x, world.heightAt(animal.x, animal.z) + flightHeight + bob, animal.z);
+    model.rotation.y = dampAngle(model.rotation.y, animal.heading, 8, dt);
+    let authored = false;
+    if (model.userData.authoredAnimal) {
+      const current = animal.geographic ?? planetPositionToGeographic(animal.x, animal.z);
+      const previous = previousAnimalPositions.get(animal.id);
+      const speed = previous && dt > 0 ? geographicDistanceMeters(previous, current) / dt : 0;
+      previousAnimalPositions.set(animal.id, current);
+      authored = updateAuthoredAnimal(model, dt, speed, flightMotion ? 'fly' : animal.behavior,
+        geographicDistanceMeters(playerGeographic, current) < 50);
+    }
+    if (!authored) animateAnimal(model, animal.species, animal.species === 'bird' ? flightMotion : animal.behavior !== 'rest', time);
   }
 }
 
@@ -3329,6 +3747,7 @@ function updatePowerLines() {
 }
 
 function updateNpc(dt: number) {
+  npc.userData.workTimer = Math.max(0, ((npc.userData.workTimer as number | undefined) ?? 0) - dt);
   const storage = buildings.find(b => b.userData.building === 'storage');
   const threat = enemies.find(enemy => worldDistance(enemy.position, npc.position) < 6);
   const activity = chooseNpcActivity(npcState, Boolean(storage), Boolean(threat));
@@ -3339,23 +3758,47 @@ function updateNpc(dt: number) {
       destination = world.resourcePosition(target);
       if (geographicDistanceMeters(npcGeographic,
         planetPositionToGeographic(destination.x, destination.z)) < 1.3) {
-        const found = world.gatherNearest(npc.position.x, npc.position.z, 1.4, npcState.job);
-        if (found && found.resource !== 'food') {
-          npcState.carrying = found.resource;
-          npc.userData.workTimer = 0.6;
-        }
         destination = undefined;
+        if (npc.userData.workTimer === 0) {
+          if (npcState.job === 'wood') {
+            const result = world.workTree(target, true, npc.position);
+            if (result && result.kind !== 'falling' && result.kind !== 'needs-saw'
+              && result.kind !== 'out-of-reach' && result.kind !== 'limit') {
+              npc.userData.workTimer = 0.75;
+              const target = nearestPlanetPosition(result.position.x, result.position.z, npc.position.x, npc.position.z);
+              if (Math.hypot(target.x - npc.position.x, target.z - npc.position.z) > 0.01) {
+                npc.rotation.y = Math.atan2(target.x - npc.position.x, target.z - npc.position.z);
+              }
+              if (result.kind !== 'collected') npc.userData.sawTarget = result.position.clone();
+              if (result.kind === 'collected') {
+                npcState.carrying = 'wood';
+                npcState.carryingAmount = result.amount;
+              }
+              void saveGame(false);
+            }
+          } else {
+            const found = world.gatherNearest(npc.position.x, npc.position.z, 1.4, 'stone');
+            if (found) {
+              npcState.carrying = 'stone';
+              npcState.carryingAmount = 2;
+              npc.userData.workTimer = 0.6;
+              void saveGame(false);
+            }
+          }
+        }
       }
     }
   } else if (activity === 'delivering' && storage) {
     destination = storage.position;
     if (geographicDistanceMeters(npcGeographic,
       planetPositionToGeographic(storage.position.x, storage.position.z)) < 2) {
-      if (npcState.carrying) resources[npcState.carrying] += npcState.carrying === 'wood' ? 3 : 2;
+      if (npcState.carrying) resources[npcState.carrying] += npcState.carryingAmount ?? (npcState.carrying === 'wood' ? 3 : 2);
       npcState.carrying = null;
+      npcState.carryingAmount = undefined;
       destination = undefined;
       updateResources();
       updateObjective();
+      void saveGame(false);
     }
   } else if (activity === 'taking cover' && threat) {
     const away = npc.position.clone().sub(threat.position).setY(0).normalize();
@@ -3393,13 +3836,17 @@ function updateNpc(dt: number) {
   }
   npc.position.y = world.heightAt(npc.position.x, npc.position.z);
   npcGeographic = { ...npcGeographic, altitude: npc.position.y };
-  npc.userData.workTimer = Math.max(0, ((npc.userData.workTimer as number | undefined) ?? 0) - dt);
-  animateCharacter(npc, dt, destination ? 1 : 0, false, npc.userData.workTimer > 0 ? (npcState.job === 'stone' ? 'mine' : 'chop') : undefined, Boolean(npcState.carrying) && npc.userData.workTimer === 0, npc.userData.workTimer as number);
+  animateCharacter(npc, dt, destination ? 1 : 0, false, npc.userData.workTimer > 0
+    ? (npcState.job === 'stone' ? 'mine' : npcState.carrying ? 'gather' : 'saw') : undefined,
+  Boolean(npcState.carrying) && npc.userData.workTimer === 0, npc.userData.workTimer as number);
 }
 
 function animateCharacter(character: THREE.Group, dt: number, movement: number, running = false, action?: typeof animationAction, carrying = false, actionTime = animationActionTime) {
-  const attackTool = character === player ? selectedWeapon === 'axe' ? 'chop' : selectedWeapon === 'stick' ? 'stick' : null : 'weapon';
-  if (updateAuthoredCharacter(character, dt, movement, running, action, carrying, attackTool)) return;
+  const attackTool = character === player ? selectedWeapon === 'axe' ? 'chop' : selectedWeapon === 'stick' ? 'stick'
+    : selectedWeapon === 'saw' ? 'saw' : null : character.userData.enemy ? 'weapon' : null;
+  const sawTarget: unknown = character.userData.sawTarget;
+  if (updateAuthoredCharacter(character, dt, movement, running, action, carrying, attackTool,
+    sawTarget instanceof THREE.Vector3 ? sawTarget : undefined)) return;
   const time = performance.now() * (running ? 0.011 : 0.007);
   const legL = character.getObjectByName('legL');
   const legR = character.getObjectByName('legR');
@@ -3422,7 +3869,9 @@ function animateCharacter(character: THREE.Group, dt: number, movement: number, 
     kneeR.rotation.x = THREE.MathUtils.lerp(kneeR.rotation.x, Math.max(0, swing) * 0.8, blend);
   }
   if (armL && armR) {
-    const actionSwing = action === 'hurt' ? -0.5 : action ? -1.5 * Math.sin((1 - actionTime / 0.6) * Math.PI) : swing * 0.65;
+    const actionSwing = action === 'hurt' ? -0.5 : action === 'saw'
+      ? -1.05 + Math.sin((0.75 - actionTime) * 15) * 0.3
+      : action ? -1.5 * Math.sin((1 - actionTime / 0.6) * Math.PI) : swing * 0.65;
     const enemyPose = character.userData.enemyKind === 'undead' || character.userData.enemyKind === 'nightcreature' ? -0.55 : 0;
     armL.rotation.x = THREE.MathUtils.lerp(armL.rotation.x, carrying ? -1.1 : enemyPose - swing * 0.65, blend);
     armR.rotation.x = THREE.MathUtils.lerp(armR.rotation.x, carrying ? -1.1 : actionSwing, blend);
@@ -3432,9 +3881,9 @@ function animateCharacter(character: THREE.Group, dt: number, movement: number, 
     elbowR.rotation.x = THREE.MathUtils.lerp(elbowR.rotation.x, carrying ? -0.5 : action ? -0.4 : -0.15, blend);
   }
   if (!character.userData.enemy) {
-    for (const kind of ['chop', 'mine', 'weapon', 'stick'] as const) {
+    for (const kind of ['chop', 'mine', 'weapon', 'stick', 'saw'] as const) {
       const tool = character.getObjectByName(`tool-${kind}`);
-      if (tool) tool.visible = kind === (action === 'attack' ? attackTool : action === 'build' ? 'chop' : action);
+      if (tool) tool.visible = kind === visibleCharacterTool(action, attackTool);
     }
   }
   if (torso) torso.scale.y = 1 + Math.sin(performance.now() * 0.002) * 0.012;
@@ -3450,7 +3899,7 @@ function drawMinimap() {
   for (let y = -45; y < 45; y += 4) {
     for (let x = -45; x < 45; x += 4) {
       const wx = player.position.x + x;
-      const wz = player.position.z + y;
+      const wz = player.position.z - y;
       const h = world.heightAt(wx, wz);
       ctx.fillStyle = h < 0 ? '#4e9daa' : h > 4.4 ? '#7d8580' : '#72a85d';
       ctx.fillRect(map.width / 2 + x * scale - 3, map.height / 2 + y * scale - 3, 7, 7);
@@ -3461,23 +3910,40 @@ function drawMinimap() {
   ctx.arc(map.width / 2, map.height / 2, 5, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = '#f3f5e8';
+  ctx.save();
+  ctx.translate(map.width / 2, map.height / 2);
+  const heading = driving ? vehicle.rotation.y + Math.PI / 2 : player.rotation.y;
+  ctx.rotate(heading);
   ctx.beginPath();
-  ctx.moveTo(map.width / 2, map.height / 2 - 10);
-  ctx.lineTo(map.width / 2 - 4, map.height / 2 - 3);
-  ctx.lineTo(map.width / 2 + 4, map.height / 2 - 3);
+  ctx.moveTo(0, -15);
+  ctx.lineTo(-5, -4);
+  ctx.lineTo(5, -4);
+  ctx.closePath();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#263d35';
+  ctx.stroke();
   ctx.fill();
+  ctx.restore();
   buildings.forEach(building => {
     ctx.fillStyle = '#bf6c45';
-    ctx.fillRect(map.width / 2 + (building.position.x - player.position.x) * scale, map.height / 2 + (building.position.z - player.position.z) * scale, 5, 5);
+    ctx.fillRect(map.width / 2 + (building.position.x - player.position.x) * scale, map.height / 2 - (building.position.z - player.position.z) * scale, 5, 5);
   });
   enemies.forEach(enemy => {
     ctx.fillStyle = '#b84d55';
-    ctx.fillRect(map.width / 2 + (enemy.position.x - player.position.x) * scale, map.height / 2 + (enemy.position.z - player.position.z) * scale, 4, 4);
+    ctx.fillRect(map.width / 2 + (enemy.position.x - player.position.x) * scale, map.height / 2 - (enemy.position.z - player.position.z) * scale, 4, 4);
   });
   wildlife.forEach(animal => {
     ctx.fillStyle = animal.species === 'wolf' ? '#9a5962' : '#f2e4a5';
-    ctx.fillRect(map.width / 2 + (animal.x - player.position.x) * scale, map.height / 2 + (animal.z - player.position.z) * scale, 3, 3);
+    ctx.fillRect(map.width / 2 + (animal.x - player.position.x) * scale, map.height / 2 - (animal.z - player.position.z) * scale, 3, 3);
   });
+  ctx.font = 'bold 12px system-ui';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#263d35';
+  ctx.strokeText('N', map.width / 2, 20);
+  ctx.fillStyle = '#f3f5e8';
+  ctx.fillText('N', map.width / 2, 20);
   ctx.strokeStyle = '#dfeada';
   ctx.lineWidth = 3;
   ctx.beginPath();
@@ -3553,13 +4019,13 @@ async function importSave(file: File) {
   }
 }
 
+let saveQueue: Promise<void> = Promise.resolve();
+
 async function saveGame(notify: boolean) {
   if (!gameStarted) return false;
   try {
-    const db = await openDatabase();
-    const tx = db.transaction('saves', 'readwrite');
-    tx.objectStore('saves').put({
-      version: 12,
+    const snapshot = structuredClone({
+      version: 13,
       seed,
       outfit,
       appearance: { ...appearance },
@@ -3593,8 +4059,11 @@ async function saveGame(notify: boolean) {
       },
       stones,
       selectedWeapon,
+      axeRequiresCrafting: true,
+      backpackEquipped,
       onboarding: { ...onboarding },
       depleted: world.depletedSnapshot(),
+      treeHarvest: world.treeHarvestSnapshot(),
       minerals: { ...mineralInventory },
       mining: world.miningSnapshot(),
       ingots: { ...ingots },
@@ -3604,28 +4073,56 @@ async function saveGame(notify: boolean) {
       tools: [...tools],
       ...(torch.crafted ? { torch: { ...torch } } : {}),
       calendar: { minute: gameMinutes, day, speed: gameSpeed },
-      vehicle: { x: vehicle.position.x, z: vehicle.position.z },
-    }, 'primary');
-    await new Promise<void>((resolve, reject) => {
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () => reject(tx.error ?? new Error('Save transaction aborted'));
+      vehicle: { x: vehicle.position.x, z: vehicle.position.z, yaw: vehicle.rotation.y },
     });
-    db.close();
+    if (!isSaveData(snapshot)) throw new Error('Invalid world state; the previous save was retained');
+    const pending = saveQueue.then(async () => {
+      const db = await openDatabase();
+      try {
+        const tx = db.transaction('saves', 'readwrite');
+        tx.objectStore('saves').put(snapshot, 'primary');
+        await new Promise<void>((resolve, reject) => {
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error ?? new Error('Save transaction aborted'));
+        });
+      } finally {
+        db.close();
+      }
+    });
+    saveQueue = pending.then(() => undefined, () => undefined);
+    await pending;
     if (notify) toast('World saved');
     return true;
   } catch (error) {
     console.error('Could not save world', error);
-    toast('Could not save world. Check browser storage.');
+    toast('Could not save world. Check browser storage and console.');
     return false;
   }
 }
 
 async function loadGame() {
   try {
+    await saveQueue;
     const saved = await readSaveRecord('primary');
     if (!saved) { toast('No saved world found'); return false; }
     if (!isSaveData(saved)) { toast('Save is invalid or from an unsupported version'); return false; }
+      if (!saved.axeRequiresCrafting) {
+        const backupDb = await openDatabase();
+        try {
+          const backupTx = backupDb.transaction('saves', 'readwrite');
+          const store = backupTx.objectStore('saves');
+          const existing = store.get('pre-equipment-backup');
+          existing.onsuccess = () => { if (!existing.result) store.put(saved, 'pre-equipment-backup'); };
+          await new Promise<void>((resolve, reject) => {
+            backupTx.oncomplete = () => resolve();
+            backupTx.onerror = () => reject(backupTx.error);
+            backupTx.onabort = () => reject(backupTx.error ?? new Error('Equipment backup transaction aborted'));
+          });
+        } finally {
+          backupDb.close();
+        }
+      }
       if (saved.version < 6) {
         const backupDb = await openDatabase();
         const backupTx = backupDb.transaction('saves', 'readwrite');
@@ -3717,6 +4214,19 @@ async function loadGame() {
         });
         backupDb.close();
       }
+      if (saved.version < 13) {
+        const backupDb = await openDatabase();
+        const backupTx = backupDb.transaction('saves', 'readwrite');
+        const store = backupTx.objectStore('saves');
+        const existing = store.get('pre-timber-backup');
+        existing.onsuccess = () => { if (!existing.result) store.put(saved, 'pre-timber-backup'); };
+        await new Promise<void>((resolve, reject) => {
+          backupTx.oncomplete = () => resolve();
+          backupTx.onerror = () => reject(backupTx.error);
+          backupTx.onabort = () => reject(backupTx.error ?? new Error('Timber backup transaction aborted'));
+        });
+        backupDb.close();
+      }
       const save = saved;
       seed = save.seed;
       outfit = save.outfit;
@@ -3724,6 +4234,8 @@ async function loadGame() {
       characterName = save.playerName ?? 'Survivor';
       npcAppearanceSeed = save.npcAppearanceSeed ?? (((seed >>> 0) + 53917) >>> 0);
       resetWorld();
+      backpackEquipped = save.backpackEquipped ?? true;
+      setAuthoredBackpackVisible(player, backpackEquipped);
       onboarding = save.onboarding ? { ...save.onboarding } : { mode: 'free', gathered: false, openedPack: false };
       if (save.wildlife) resetWildlife(save.wildlife);
       Object.assign(resources, save.resources);
@@ -3732,8 +4244,11 @@ async function loadGame() {
         copper: save.version >= 8 ? save.ingots?.copper ?? 0 : 0, glass: save.version >= 9 ? save.ingots?.glass ?? 0 : 0 });
       ironPickaxe = save.version >= 8 && Boolean(save.ironPickaxe);
       if (save.npcState) Object.assign(npcState, save.npcState);
+      if (npcState.carrying && npcState.carryingAmount === undefined) {
+        npcState.carryingAmount = npcState.carrying === 'wood' ? 3 : 2;
+      }
       health = save.health ?? 100;
-      tools.push(...(save.tools ?? []));
+      tools.push(...toolsFromSave(save));
       Object.assign(torch, save.torch ?? { crafted: false, equipped: false, lit: false });
       stones = save.stones ?? 0;
       selectedWeapon = save.selectedWeapon ?? 'fists';
@@ -3752,10 +4267,12 @@ async function loadGame() {
       world.updateChunks(savedPlayerPosition.x, savedPlayerPosition.z, true);
       world.restore(save.terrain);
       world.restoreDepleted(save.depleted ?? []);
+      world.restoreTreeHarvest(save.version >= 13 ? save.treeHarvest ?? {} : {});
       world.restoreMining(save.version >= 8 ? (save.mining ?? {}) : {});
       player.position.set(savedPlayerPosition.x, world.heightAt(savedPlayerPosition.x, savedPlayerPosition.z), savedPlayerPosition.z);
       npc.position.set(savedNpcPosition.x, world.heightAt(savedNpcPosition.x, savedNpcPosition.z), savedNpcPosition.z);
       vehicle.position.set(savedVehiclePosition.x, world.heightAt(savedVehiclePosition.x, savedVehiclePosition.z), savedVehiclePosition.z);
+      vehicle.rotation.y = THREE.MathUtils.euclideanModulo((save.vehicle.yaw ?? 0) + Math.PI, Math.PI * 2) - Math.PI;
       gameMinutes = save.calendar.minute;
       day = save.calendar.day;
       gameSpeed = save.calendar.speed ?? 2.2;
@@ -3769,6 +4286,7 @@ async function loadGame() {
         buildingRecords.push({ ...record, charge: record.charge ?? 0, powered: false });
       });
       structures.push(...(save.structures ?? []).map(piece => ({ ...piece })));
+      structureCollisionDirty = true;
       world.setFloorCover(structures);
       roads.splice(0, roads.length, ...(save.roads ?? []).map(road => ({ ...road })));
       surfacePaint.splice(0, surfacePaint.length, ...(save.paint ?? []).map(paint => ({ ...paint, strokes: paint.strokes.map(stroke => ({ ...stroke })) })));
@@ -3787,7 +4305,7 @@ async function loadGame() {
         ...structures.map(piece => ({ x: piece.x, z: piece.z, radius: 1 })),
       ]);
       autoRoof = save.autoRoof ?? true;
-      roofStyle = save.roofStyle ?? 'flat';
+      roofStyle = save.roofStyle ?? 'flat'; // Older saves omit the flat selection.
       roofAxis = save.roofAxis ?? 'auto';
       for (const request of save.pendingRoofs ?? []) pendingRoofs.set(roofKey(request), { ...request });
       (document.querySelector('#autoRoof') as HTMLInputElement).checked = autoRoof;
@@ -3797,6 +4315,10 @@ async function loadGame() {
       if (save.player.y !== undefined) {
         player.position.y = floorSurface(structures, player.position.x, player.position.z, save.player.y, world.heightAt(player.position.x, player.position.z));
       }
+      vehicle.position.y = roverSurfaceAt(vehicle.position.x, vehicle.position.z, vehicle.position.y);
+      vehicleGeographic.altitude = vehicle.position.y;
+      roverSteeringYaw = 0;
+      updateRoverVisual(0, 0, 0, true);
       updatePowerLines();
       rebaseWorld();
       startGame();

@@ -1,0 +1,7 @@
+"Fan Palm" by vinish.dev (https://vinish.dev/free-3d-models/),
+licensed under Creative Commons Attribution 4.0 International:
+https://creativecommons.org/licenses/by/4.0/
+
+Source: https://vinish.dev/free-3d-models/trees
+Changes: geometry simplified; the models are scaled, animated and rendered by New Dawn.
+The originals are available at the source above. No endorsement is implied.

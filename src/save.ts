@@ -14,9 +14,10 @@ import type { RoadSegment } from './roads';
 import { geographicDistanceMeters, isAtlasState, type AtlasState, type GeographicPosition } from './geography';
 import { PLANET_WIDTH, planetPositionToGeographic } from './planet';
 import { isOnboardingState, type OnboardingState } from './onboarding';
+import { isTreeHarvestRecord, type TreeHarvestRecord } from './tree-harvest';
 
 export interface SaveData {
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
   seed: number;
   outfit: Outfit;
   appearance?: CharacterAppearance;
@@ -38,9 +39,12 @@ export interface SaveData {
   paint?: SurfacePaint[];
   atlas?: AtlasState;
   stones?: number;
-  selectedWeapon?: 'fists' | 'stick' | 'axe' | 'stones';
+  selectedWeapon?: 'fists' | 'stick' | 'axe' | 'stones' | 'saw';
+  axeRequiresCrafting?: true;
+  backpackEquipped?: boolean;
   onboarding?: OnboardingState;
   depleted?: string[];
+  treeHarvest?: TreeHarvestRecord;
   minerals?: MineralInventory;
   mining?: Record<string, number>;
   ingots?: SavedIngots;
@@ -49,8 +53,14 @@ export interface SaveData {
   health?: number;
   tools?: Tool[];
   calendar: { minute: number; day: number; speed?: number };
-  vehicle: { x: number; z: number };
+  vehicle: { x: number; z: number; yaw?: number };
   planetPositions?: { player: GeographicPosition; vehicle: GeographicPosition; npc?: GeographicPosition };
+}
+
+export function toolsFromSave(save: Pick<SaveData, 'tools' | 'axeRequiresCrafting'>): Tool[] {
+  const restored = [...(save.tools ?? [])];
+  if (!save.axeRequiresCrafting && !restored.includes('axe')) restored.push('axe');
+  return restored;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -78,13 +88,14 @@ function matchesProjectedPosition(value: GeographicPosition, position: unknown) 
 }
 
 export function isSaveData(value: unknown): value is SaveData {
-  if (!isObject(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4 && value.version !== 5 && value.version !== 6 && value.version !== 7 && value.version !== 8 && value.version !== 9 && value.version !== 10 && value.version !== 11 && value.version !== 12)
+  if (!isObject(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4 && value.version !== 5 && value.version !== 6 && value.version !== 7 && value.version !== 8 && value.version !== 9 && value.version !== 10 && value.version !== 11 && value.version !== 12 && value.version !== 13)
     || !isNumber(value.seed) || !safeSpawn(value.seed) || !['ember', 'sage', 'azure'].includes(String(value.outfit))
     || !isPosition(value.player, value.version >= 6 ? PLANET_WIDTH * 2 : 48)
     || !isPosition(value.npc, value.version >= 6 ? PLANET_WIDTH * 2 : 48)
     || !isPosition(value.vehicle, value.version >= 6 ? PLANET_WIDTH * 2 : 48)
     || !isObject(value.resources) || !isObject(value.terrain) || !isObject(value.calendar)
     || !Array.isArray(value.buildings)) return false;
+  if (value.vehicle.yaw !== undefined && !isNumber(value.vehicle.yaw)) return false;
   if (value.planetPositions !== undefined) {
     const positions = value.planetPositions;
     if (!isObject(positions) || !isGeographicPosition(positions.player) || !isGeographicPosition(positions.vehicle)
@@ -177,7 +188,8 @@ export function isSaveData(value: unknown): value is SaveData {
     if (value.version >= 11 && !isAtlasState(value.atlas)) return false;
   }
   if (value.stones !== undefined && (!isNumber(value.stones) || !Number.isInteger(value.stones) || value.stones < 0 || value.stones > 100000)) return false;
-  if (value.selectedWeapon !== undefined && !['fists', 'stick', 'axe', 'stones'].includes(String(value.selectedWeapon))) return false;
+  if (value.selectedWeapon !== undefined && !['fists', 'stick', 'axe', 'stones', ...(version >= 13 ? ['saw'] : [])].includes(String(value.selectedWeapon))) return false;
+  if (value.backpackEquipped !== undefined && typeof value.backpackEquipped !== 'boolean') return false;
   if (value.onboarding !== undefined && !isOnboardingState(value.onboarding)) return false;
   if (value.version >= 8 && (!isMineralInventory(value.minerals) || !isIngots(value.ingots, value.version >= 9)
     || typeof value.ironPickaxe !== 'boolean'
@@ -187,6 +199,8 @@ export function isSaveData(value: unknown): value is SaveData {
     || !Object.entries(value.mining).every(([key, n]) => /^-?\d+,-?\d+$/.test(key)
       && typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= 3))) return false;
   if (value.depleted !== undefined && (!Array.isArray(value.depleted) || !value.depleted.every(id => typeof id === 'string' && /^-?\d+,-?\d+$/.test(id)))) return false;
+  if (version >= 13 && (!isTreeHarvestRecord(value.treeHarvest)
+    || (Array.isArray(value.depleted) && value.depleted.some(id => Object.hasOwn(value.treeHarvest as object, id))))) return false;
   if (value.version >= 3 && (value.appearance === undefined || value.playerName === undefined || value.npcAppearanceSeed === undefined)) return false;
   if (value.version >= 4 && value.wildlife === undefined) return false;
   if (value.wildlife !== undefined && !isWildlifeState(value.wildlife)) return false;
@@ -195,10 +209,17 @@ export function isSaveData(value: unknown): value is SaveData {
   if (value.npcAppearanceSeed !== undefined && (!isNumber(value.npcAppearanceSeed) || !Number.isInteger(value.npcAppearanceSeed) || value.npcAppearanceSeed < 0 || value.npcAppearanceSeed > 0xffffffff)) return false;
   if (value.health !== undefined && (!isNumber(value.health) || value.health < 0 || value.health > 100)) return false;
   if (value.tools !== undefined && (!Array.isArray(value.tools) || !value.tools.every(tool => tool === 'axe' || tool === 'pickaxe'))) return false;
+  if (value.axeRequiresCrafting !== undefined && value.axeRequiresCrafting !== true) return false;
+  if (value.axeRequiresCrafting === true && value.selectedWeapon === 'axe'
+    && (!Array.isArray(value.tools) || !value.tools.includes('axe'))) return false;
   if (value.npcState !== undefined) {
     if (!isObject(value.npcState) || typeof value.npcState.recruited !== 'boolean'
       || !['idle', 'wood', 'stone'].includes(String(value.npcState.job))
-      || ![null, 'wood', 'stone'].includes(value.npcState.carrying as string | null)) return false;
+      || ![null, 'wood', 'stone'].includes(value.npcState.carrying as string | null)
+      || (value.npcState.carryingAmount !== undefined && (!isNumber(value.npcState.carryingAmount)
+        || !Number.isInteger(value.npcState.carryingAmount) || value.npcState.carryingAmount < 1
+        || value.npcState.carryingAmount > 3 || value.npcState.carrying === null))
+      || (version >= 13 && value.npcState.carrying !== null && value.npcState.carryingAmount === undefined)) return false;
   }
   return true;
 }

@@ -1,15 +1,21 @@
 import * as THREE from 'three';
 import {
-  CHUNK_SIZE, PLANET_HEIGHT, PLANET_WIDTH, nearestPlanetPosition, planetCoordinates, planetDistanceMeters, planetHeight, PlanetTangentFrame,
+  CHUNK_SIZE, PLANET_HEIGHT, PLANET_WIDTH, geographicToPlanetPosition, nearestPlanetPosition, planetCoordinates,
+  planetDistanceMeters, planetHeight, planetOffset, planetPositionToGeographic, PlanetTangentFrame,
 } from './planet';
 import { depositKinds, requiresPickaxe, type DepositKind } from './economy';
 import { TreeClearance, obstructingTreeMeshes } from './tree-occlusion';
-import { climateZone } from './geography';
+import { climateZone, EARTH_RADIUS_METERS, geographicDistanceMeters } from './geography';
 import { createTerrainMaterial, TerrainTextures } from './terrain-material';
 import { NatureAssets, type NatureTreeVariant } from './nature-assets';
 import { GroundNatureAssets, type GroundAssetKind } from './ground-nature-assets';
 import { computeFullCoverBounds, coverCount, treeDetail, type TreeDetail, type VegetationQuality } from './vegetation-lod';
 import type { StructuralPiece } from './construction';
+import { MAX_ACTIVE_TREES, TREE_WORK_REACH, treeYield, type TreeHarvestRecord, type TreeHarvestState } from './tree-harvest';
+import {
+  collisionObstacleNearQuery, MAX_COLLISION_OBSTACLES, validCollisionQuery,
+  type CollisionObstacle, type CollisionQuery, type CollisionQueryResult,
+} from './wildlife-collision';
 
 /** Share of non-adult firs and spruces drawn as full young whorled firs rather than sparse saplings. */
 const YOUNG_FIR_SHARE = 0.5;
@@ -19,18 +25,39 @@ export type VegetationFamily = 'none' | 'deciduous' | 'conifer' | 'cactus';
 export type TreeSpecies = 'pine' | 'spruce' | 'fir' | 'birch' | 'oak' | 'maple' | 'palm' | 'acacia' | 'tropical';
 type Season = 'Spring' | 'Summer' | 'Autumn' | 'Winter';
 
-/** Deterministic visual age class; it never alters resources or saves. */
+/** Deterministic tree age; maturity also contributes to timber yield. */
 export function treeAgeClass(species: TreeSpecies, seedX: number, seedZ: number, seed: number): 'mature' | 'young' | 'default' {
   const firLike = species === 'fir' || species === 'spruce';
   if ((species === 'oak' && seededNoise(seedX, seedZ, seed + 791) < 0.12)
     || (species === 'pine' && seededNoise(seedX, seedZ, seed + 792) < 0.16)
-    || (firLike && seededNoise(seedX, seedZ, seed + 793) < 0.32)) return 'mature';
+    || (firLike && seededNoise(seedX, seedZ, seed + 793) < 0.32)
+    || (species === 'birch' && seededNoise(seedX, seedZ, seed + 795) < 0.32)) return 'mature';
   return firLike && seededNoise(seedX, seedZ, seed + 794) < YOUNG_FIR_SHARE ? 'young' : 'default';
 }
 type Resource = 'wood' | 'stone' | 'food';
+type TreeWorkResult =
+  | { kind: 'needs-saw' }
+  | { kind: 'out-of-reach' }
+  | { kind: 'falling' }
+  | { kind: 'limit' }
+  | { kind: 'felling'; progress: number; position: THREE.Vector3 }
+  | { kind: 'sawing'; progress: number; position: THREE.Vector3 }
+  | { kind: 'felled'; total: number; position: THREE.Vector3 }
+  | { kind: 'cut'; total: number; position: THREE.Vector3 }
+  | { kind: 'collected'; amount: number; remaining: number; position: THREE.Vector3 };
 type Chunk = { x: number; z: number; objects: THREE.Object3D[]; terrain: THREE.Mesh; water: THREE.Mesh;
   terrainCoordinates: Float32Array; coverCoordinates: Map<THREE.InstancedMesh, Float32Array>;
   hiddenCover: Map<THREE.InstancedMesh, Map<number, number[]>>; baseColors: Float32Array };
+type NaturePlacement = {
+  id: string; x: number; z: number; y: number; seedX: number; seedZ: number;
+  kind: 'wood' | 'stone' | 'cactus' | 'food';
+  family: VegetationFamily; legacy: boolean;
+};
+type CachedCollisionObstacle = { obstacle: CollisionObstacle; x: number; z: number; reach: number };
+const MAX_COLLISION_CHUNKS = 128;
+const MAX_CACHED_COLLISION_CHUNKS = 128;
+// Longest generated felled trunk: 9 m nominal height * .65 * 1.4 scale, plus its radius.
+const MAX_COLLISION_RESOURCE_REACH = 9;
 
 export function seededNoise(x: number, z: number, seed: number) {
   const n = Math.sin(x * 127.1 + z * 311.7 + seed * 74.7) * 43758.5453;
@@ -176,8 +203,11 @@ export class World {
   private terrainMod = new Map<string, number>();
   private depleted = new Set<string>();
   private mining = new Map<string, number>();
+  private treeHarvest = new Map<string, TreeHarvestState>();
+  private fallingTrees = new Map<string, number>();
   private depositExclusions: Array<{ x: number; z: number; radius: number }> = [];
   private chunks = new Map<string, Chunk>();
+  private readonly collisionChunks = new Map<string, CachedCollisionObstacle[]>();
   private readonly resourceCoordinates = new WeakMap<THREE.Object3D, { x: number; z: number }>();
   private tangentFrame: PlanetTangentFrame | null = null;
   private fadedTreeMeshes = new Map<THREE.Mesh, number>();
@@ -255,6 +285,7 @@ export class World {
   }
 
   rebase(dx: number, dz: number) {
+    this.collisionChunks.clear();
     const shifted = new Map<string, Chunk>();
     for (const chunk of this.chunks.values()) {
       chunk.x += dx / CHUNK_SIZE;
@@ -279,6 +310,7 @@ export class World {
       if (Math.abs(chunk.x - cx) <= this.radius && Math.abs(chunk.z - cz) <= this.radius) continue;
       chunk.objects.forEach(object => { this.group.remove(object); this.forgetFadedMeshes(object); disposeObject(object); });
       this.chunks.delete(key);
+      this.collisionChunks.delete(key);
     }
     const missing: Array<{ x: number; z: number; distance: number }> = [];
     for (let dz = -this.radius; dz <= this.radius; dz++) {
@@ -367,6 +399,7 @@ export class World {
   }
 
   private createChunk(cx: number, cz: number) {
+    this.collisionChunks.delete(`${cx},${cz}`);
     const x0 = cx * CHUNK_SIZE;
     const z0 = cz * CHUNK_SIZE;
     const geometry = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE);
@@ -588,6 +621,7 @@ export class World {
   }
 
   setDepositExclusions(exclusions: Array<{ x: number; z: number; radius: number }>) {
+    this.collisionChunks.clear();
     this.depositExclusions = exclusions.map(exclusion => ({ ...exclusion }));
     for (const object of [...this.group.children]) {
       if (object.userData.depositId) {
@@ -597,34 +631,69 @@ export class World {
     }
   }
 
-  private addNature(chunk: Chunk) {
-    const x0 = chunk.x * CHUNK_SIZE;
-    const z0 = chunk.z * CHUNK_SIZE;
+  /** Shared with offscreen collision generation; keep placement and save IDs identical. */
+  private naturePlacement(x: number, z: number, legacy: boolean): NaturePlacement | undefined {
+    const point = planetCoordinates(x, z);
+    const id = coordinateKey(x, z);
+    if (this.depleted.has(id)) return undefined;
+    const harvest = this.treeHarvest.get(id);
+    const px = x + seededNoise(point.x, point.z, this.seed) - 0.5;
+    const pz = z + (seededNoise(point.z, point.x, this.seed + 3) - 0.5) * (point.reflected ? -1 : 1);
+    const h = legacy ? terrainHeight(px, pz, this.seed) : this.heightAt(px, pz);
+    const surface = legacy ? this.heightAt(px, pz) : h;
+    const biome = biomeAt(px, pz, this.seed);
+    const family = vegetationFamilyAt(px, pz, this.seed);
+    const canGrowTree = (family === 'deciduous' || family === 'conifer')
+      && seededNoise(point.x, point.z, this.seed + 8) > (family === 'conifer' ? 0.52 : 0.42);
+    if (harvest && !canGrowTree) throw new Error(`Tree harvest does not match resource ${id}`);
+    const kind = (h > 0.35 || harvest) && canGrowTree ? 'wood'
+      : h > 0.45 && family === 'cactus' && seededNoise(point.x, point.z, this.seed + 8) > 0.91 ? 'cactus'
+        : h > 0.1 && biome !== 'ocean' && seededNoise(point.x + 4, point.z + 9, this.seed) > 0.76 ? 'stone'
+          : h > 0.45 && seededNoise(point.x + 12, point.z - 7, this.seed) > 0.8 ? 'food' : undefined;
+    return kind ? { id, x: px, z: pz, y: surface, seedX: point.x, seedZ: point.z, kind, family, legacy } : undefined;
+  }
+
+  private forEachNaturePosition(cx: number, cz: number, visit: (x: number, z: number, legacy: boolean) => void) {
+    const x0 = cx * CHUNK_SIZE, z0 = cz * CHUNK_SIZE;
+    for (let z = z0; z < z0 + CHUNK_SIZE; z++) {
+      for (let x = x0; x < x0 + CHUNK_SIZE; x++) {
+        const point = planetCoordinates(x, z);
+        const legacy = Math.abs(point.x) <= 43 && Math.abs(point.z) <= 43;
+        if (legacy && ((point.x + 43) % 3 === 0) && ((point.z + 43) % 3 === 0)) visit(x, z, true);
+        else if (Math.max(Math.abs(point.x), Math.abs(point.z)) > 48 && x % 3 === 0 && z % 3 === 0) visit(x, z, false);
+      }
+    }
+  }
+
+  private addNature(chunk: Chunk, restoreHarvest = false) {
+    let restored = false;
     const createAt = (x: number, z: number, legacy: boolean) => {
-      const point = planetCoordinates(x, z);
       const id = coordinateKey(x, z);
       if (this.depleted.has(id)) return;
-      const px = x + seededNoise(point.x, point.z, this.seed) - 0.5;
-      const pz = z + (seededNoise(point.z, point.x, this.seed + 3) - 0.5) * (point.reflected ? -1 : 1);
-      const h = legacy ? terrainHeight(px, pz, this.seed) : this.heightAt(px, pz);
-      const surface = legacy ? this.heightAt(px, pz) : h;
-      const biome = biomeAt(px, pz, this.seed);
-      const family = vegetationFamilyAt(px, pz, this.seed);
+      const harvest = this.treeHarvest.get(id);
+      if (restoreHarvest && !harvest) return;
+      const existing = restoreHarvest ? chunk.objects.find(object => object.userData.resourceId === id) : undefined;
+      if (existing?.userData.resource === 'wood') {
+        this.applyTreeHarvest(existing);
+        return;
+      }
+      const placement = this.naturePlacement(x, z, legacy);
+      if (!placement) return;
+      const { x: px, z: pz, y: surface, family, seedX, seedZ } = placement;
       let object: THREE.Object3D | undefined;
-      if (h > 0.35 && (family === 'deciduous' || family === 'conifer')
-        && seededNoise(point.x, point.z, this.seed + 8) > (family === 'conifer' ? 0.52 : 0.42)) {
+      if (placement.kind === 'wood' && (family === 'deciduous' || family === 'conifer')) {
         const treePoint = planetCoordinates(px, pz);
         object = this.tree(px, surface, pz, treePoint.x, treePoint.z, family);
-      } else if (h > 0.45 && family === 'cactus' && seededNoise(point.x, point.z, this.seed + 8) > 0.91) {
-        object = this.cactus(px, surface, pz, point.x, point.z);
-      } else if (h > 0.1 && biome !== 'ocean' && seededNoise(point.x + 4, point.z + 9, this.seed) > 0.76) {
-        const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.25 + seededNoise(point.x, point.z, this.seed) * 0.45, 0),
+      } else if (placement.kind === 'cactus') {
+        object = this.cactus(px, surface, pz, seedX, seedZ);
+      } else if (placement.kind === 'stone') {
+        const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.25 + seededNoise(seedX, seedZ, this.seed) * 0.45, 0),
           new THREE.MeshStandardMaterial({ color: '#7c8580', roughness: 1 }));
         rock.position.set(px, surface + 0.12, pz);
         rock.castShadow = true;
         rock.userData.resource = 'stone';
         object = rock;
-      } else if (h > 0.45 && seededNoise(point.x + 12, point.z - 7, this.seed) > 0.8) {
+      } else if (placement.kind === 'food') {
         const bush = new THREE.Group();
         bush.position.set(px, surface, pz);
         const foliage = new THREE.Mesh(new THREE.IcosahedronGeometry(0.55, 1), new THREE.MeshStandardMaterial({ color: '#487a4a', roughness: 1 }));
@@ -640,22 +709,25 @@ export class World {
         object = bush;
       }
       if (object) {
+        if (existing) this.removeResource(existing);
         object.userData.resourceId = id;
         object.userData.legacy = legacy;
         this.resourceCoordinates.set(object, { x: px, z: pz });
+        if (object.userData.resource === 'wood') this.applyTreeHarvest(object);
         chunk.objects.push(object);
         this.installGroundVisual(object, 'stone');
         this.installGroundVisual(object, 'fern');
         this.installGroundVisual(object, 'shrub');
+        if (restoreHarvest) {
+          this.group.add(object);
+          restored = true;
+        }
       }
     };
-    for (let z = z0; z < z0 + CHUNK_SIZE; z++) {
-      for (let x = x0; x < x0 + CHUNK_SIZE; x++) {
-        const point = planetCoordinates(x, z);
-        const legacy = Math.abs(point.x) <= 43 && Math.abs(point.z) <= 43;
-        if (legacy && ((point.x + 43) % 3 === 0) && ((point.z + 43) % 3 === 0)) createAt(x, z, true);
-        else if (Math.max(Math.abs(point.x), Math.abs(point.z)) > 48 && x % 3 === 0 && z % 3 === 0) createAt(x, z, false);
-      }
+    this.forEachNaturePosition(chunk.x, chunk.z, createAt);
+    if (restored) {
+      if (this.tangentFrame) this.projectChunk(chunk);
+      this.colorChunk(chunk);
     }
   }
 
@@ -813,12 +885,163 @@ export class World {
     }
   }
 
+  private treeColliders(id: string, x: number, z: number, ground: number, size: number,
+    height: number, mature: boolean): CachedCollisionObstacle[] {
+    const state = this.treeHarvest.get(id);
+    const radius = (mature ? 0.38 : 0.26) * size;
+    const point = { x, z };
+    const standing: CollisionObstacle = { type: 'circle', id: `tree:${id}`,
+      position: point, radius, bottomY: ground - 0.15, topY: ground + height * size };
+    if (!state || state.phase === 'standing') return [{ obstacle: standing, x, z, reach: radius }];
+    const fullLength = height * 0.65 * size;
+    const length = state.phase === 'logs'
+      ? fullLength * Math.ceil(state.remaining / 3) / Math.ceil(state.total / 3) : fullLength;
+    const endpoint = new PlanetTangentFrame(point).toPlanet({
+      x: Math.cos(state.direction) * length, z: Math.sin(state.direction) * length,
+    });
+    const falling = this.fallingTrees.has(id);
+    const fallen: CollisionObstacle = { type: 'segment', id: `tree:${id}${falling ? ':falling-trunk' : ''}`,
+      a: point, b: endpoint, radius,
+      bottomY: ground - 0.3 * size,
+      // During the short felling animation use a conservative swept volume,
+      // not a persistent rigid body or a trunk that can be walked through.
+      topY: ground + (falling ? height * size : 0.5 * size) };
+    const result: CachedCollisionObstacle[] = [{ obstacle: fallen, x, z, reach: length + radius }];
+    if (falling) result.push({ obstacle: standing, x, z, reach: radius });
+    return result;
+  }
+
+  private simpleResourceCollider(id: string, x: number, z: number, ground: number,
+    kind: 'stone' | 'cactus' | 'deposit', seedX = x, seedZ = z): CachedCollisionObstacle | undefined {
+    const size = kind === 'stone' ? 0.25 + seededNoise(seedX, seedZ, this.seed) * 0.45
+      : kind === 'cactus' ? 0.75 + seededNoise(seedX, seedZ, this.seed) * 0.5 : 1;
+    // Small collectible stones are trampleable rather than invisible barriers.
+    if (kind === 'stone' && size < 0.45) return undefined;
+    const radius = kind === 'stone' ? size : kind === 'cactus' ? size * 0.5 : 0.75;
+    const top = kind === 'stone' ? size + 0.12 : kind === 'cactus' ? 1.45 * size : 0.9;
+    const obstacle: CollisionObstacle = { type: 'circle', id: `${kind === 'deposit' ? 'deposit' : 'resource'}:${id}`,
+      position: { x, z }, radius, bottomY: ground - 0.12, topY: ground + top };
+    return { obstacle, x, z, reach: radius };
+  }
+
+  private collisionChunk(cx: number, cz: number): CachedCollisionObstacle[] {
+    const key = `${cx},${cz}`;
+    const cached = this.collisionChunks.get(key);
+    if (cached) {
+      this.collisionChunks.delete(key);
+      this.collisionChunks.set(key, cached);
+      return cached;
+    }
+    const result: CachedCollisionObstacle[] = [];
+    const chunk = this.chunks.get(key);
+    if (chunk) {
+      // Loaded resources are authoritative after terrain edits and exclusions:
+      // edits reposition objects without necessarily regenerating their type.
+      for (const object of chunk.objects) {
+        const id: unknown = object.userData.resourceId;
+        const deposit: unknown = object.userData.depositId;
+        if (typeof id !== 'string' && typeof deposit !== 'string') continue;
+        const location = this.resourceLocation(object);
+        const ground = object.userData.harvestLogs ? object.position.y - object.scale.x * 0.2
+          : object.userData.resource === 'stone' ? object.position.y - 0.12 : object.position.y;
+        if (typeof id === 'string' && object.userData.resource === 'wood') {
+          result.push(...this.treeColliders(id, location.x, location.z, ground, object.scale.x,
+            this.treeHeight(object), Boolean(object.userData.natureMature)));
+        } else if (typeof deposit === 'string') {
+          const item = this.simpleResourceCollider(deposit, location.x, location.z, ground, 'deposit');
+          if (item) result.push(item);
+        } else if (typeof id === 'string'
+          && (object.userData.resource === 'stone' || object.userData.vegetationFamily === 'cactus')) {
+          const [seedX, seedZ] = id.split(',').map(Number);
+          const item = this.simpleResourceCollider(id, location.x, location.z, ground,
+            object.userData.resource === 'stone' ? 'stone' : 'cactus', seedX, seedZ);
+          if (item) result.push(item);
+        }
+      }
+    } else {
+      // Reconstruct just compact collision descriptors, never meshes or a new
+      // population. This is bounded and uses the same generation as addNature.
+      this.forEachNaturePosition(cx, cz, (x, z, legacy) => {
+        const placement = this.naturePlacement(x, z, legacy);
+        if (!placement) return;
+        const { id, x: px, z: pz, y, kind, family, seedX, seedZ } = placement;
+        if (kind === 'wood' && (family === 'deciduous' || family === 'conifer')) {
+          const point = planetCoordinates(px, pz);
+          const species = treeSpeciesAt(point.x, point.z, this.seed, family);
+          const age = treeAgeClass(species, point.x, point.z, this.seed);
+          const height = species === 'palm' ? 7 : age === 'mature' ? family === 'conifer' ? 9 : 7
+            : age === 'young' ? 5.4 : species === 'pine' ? 5 : 4;
+          const size = 0.75 + seededNoise(point.x, point.z, this.seed) * 0.65;
+          result.push(...this.treeColliders(id, px, pz, y, size, height, age === 'mature'));
+        } else if (kind === 'stone' || kind === 'cactus') {
+          const item = this.simpleResourceCollider(id, px, pz, y, kind, seedX, seedZ);
+          if (item) result.push(item);
+        }
+      });
+      for (let z = cz * CHUNK_SIZE + 6; z < (cz + 1) * CHUNK_SIZE; z += 12) {
+        for (let x = cx * CHUNK_SIZE + 6; x < (cx + 1) * CHUNK_SIZE; x += 12) {
+          const id = coordinateKey(x, z);
+          if ((this.mining.get(id) ?? 0) >= 3 || this.depositBlocked(x, z) || terrainHeight(x, z, this.seed) <= 0.45) continue;
+          const item = this.simpleResourceCollider(id, x, z, this.heightAt(x, z), 'deposit');
+          if (item) result.push(item);
+        }
+      }
+    }
+    this.collisionChunks.set(key, result);
+    if (this.collisionChunks.size > MAX_CACHED_COLLISION_CHUNKS) {
+      const oldest = this.collisionChunks.keys().next().value;
+      if (oldest !== undefined) this.collisionChunks.delete(oldest);
+    }
+    return result;
+  }
+
+  /**
+   * Resource colliders for a bounded swept query, including adjacent unloaded
+   * chunks. A very large/polar query fails closed rather than silently dropping
+   * candidates. This does not claim that projected terrain is polar-ready.
+   */
+  collisionObstacles(query: CollisionQuery): CollisionQueryResult {
+    if (!validCollisionQuery(query)) return { complete: false, reason: 'unavailable' };
+    const origin = query.from.geographic ?? planetPositionToGeographic(query.from.x, query.from.z);
+    const destination = query.to.geographic ?? planetPositionToGeographic(query.to.x, query.to.z);
+    const travel = geographicDistanceMeters(origin, destination);
+    const span = travel + query.radius + MAX_COLLISION_RESOURCE_REACH + 0.05;
+    const farLatitude = Math.abs(origin.latitude) + span / EARTH_RADIUS_METERS * 180 / Math.PI;
+    if (farLatitude >= 90) return { complete: false, reason: 'overflow' };
+    const xScale = PLANET_WIDTH / (2 * Math.PI * EARTH_RADIUS_METERS) / Math.cos(farLatitude * Math.PI / 180);
+    const zScale = PLANET_HEIGHT / (Math.PI * EARTH_RADIUS_METERS);
+    const canonical = geographicToPlanetPosition(origin.latitude, origin.longitude);
+    const center = nearestPlanetPosition(canonical.x, canonical.z, query.from.x, query.from.z);
+    const minX = Math.floor((center.x - span * xScale * 1.001) / CHUNK_SIZE);
+    const maxX = Math.floor((center.x + span * xScale * 1.001) / CHUNK_SIZE);
+    const minZ = Math.floor((center.z - span * zScale * 1.001) / CHUNK_SIZE);
+    const maxZ = Math.floor((center.z + span * zScale * 1.001) / CHUNK_SIZE);
+    if ((maxX - minX + 1) * (maxZ - minZ + 1) > MAX_COLLISION_CHUNKS) return { complete: false, reason: 'overflow' };
+    const found = new Map<string, CollisionObstacle>();
+    try {
+      for (let z = minZ; z <= maxZ; z++) for (let x = minX; x <= maxX; x++) {
+        for (const entry of this.collisionChunk(x, z)) {
+          const reach = travel + query.radius + entry.reach + 0.05;
+          if (Math.abs(entry.x - center.x) > reach * xScale * 1.001
+            || Math.abs(entry.z - center.z) > reach * zScale * 1.001) continue;
+          if (!collisionObstacleNearQuery(query, entry.obstacle)) continue;
+          found.set(entry.obstacle.id, entry.obstacle);
+          if (found.size > Math.min(query.limit, MAX_COLLISION_OBSTACLES)) return { complete: false, reason: 'overflow' };
+        }
+      }
+    } catch {
+      // Corrupt or inconsistent saved resource state is not safe to walk through.
+      return { complete: false, reason: 'unavailable' };
+    }
+    return { complete: true, obstacles: [...found.values()].sort((a, b) => a.id.localeCompare(b.id)) };
+  }
+
   findNearest(x: number, z: number, range: number, resource?: Resource) {
     let nearest: THREE.Object3D | undefined;
     let distance = range;
     for (const object of this.group.children) {
       if (!object.userData.resource || (resource && object.userData.resource !== resource)) continue;
-      const d = planetDistanceMeters(this.resourceLocation(object), { x, z });
+      const d = this.resourceDistance(object, x, z);
       if (d < distance) { distance = d; nearest = object; }
     }
     return nearest;
@@ -846,11 +1069,114 @@ export class World {
     return new THREE.Vector3(position.x, object.position.y, position.z);
   }
 
+  resourceDistance(object: THREE.Object3D, x: number, z: number) {
+    const location = this.resourceLocation(object);
+    const state = this.treeHarvest.get(object.userData.resourceId as string);
+    if (!state || state.phase === 'standing') return planetDistanceMeters(location, { x, z });
+    const offset = planetOffset(location, { x, z });
+    const dx = Math.cos(state.direction);
+    const dz = Math.sin(state.direction);
+    const along = THREE.MathUtils.clamp(offset.x * dx + offset.z * dz, 0,
+      this.treeTrunkLength(object) * object.scale.x);
+    return Math.hypot(offset.x - dx * along, offset.z - dz * along);
+  }
+
+  private treeWorkPosition(tree: THREE.Object3D, state: TreeHarvestState | undefined, actor: { x: number; z: number }) {
+    const location = this.resourceLocation(tree);
+    if (!state || state.phase === 'standing') {
+      return new THREE.Vector3(location.x, tree.position.y + tree.scale.x * 0.55, location.z);
+    }
+    const offset = planetOffset(location, actor);
+    const dx = Math.cos(state.direction);
+    const dz = Math.sin(state.direction);
+    const along = THREE.MathUtils.clamp(offset.x * dx + offset.z * dz, 0,
+      this.treeTrunkLength(tree) * tree.scale.x);
+    const point = new PlanetTangentFrame(location).toPlanet({ x: dx * along, z: dz * along });
+    const nearby = nearestPlanetPosition(point.x, point.z, actor.x, actor.z);
+    return new THREE.Vector3(nearby.x, tree.position.y + (state.phase === 'logs' ? 0 : tree.scale.x * 0.18), nearby.z);
+  }
+
+  treeHarvestSnapshot(): TreeHarvestRecord {
+    return Object.fromEntries([...this.treeHarvest].map(([id, state]) => [id, { ...state }]));
+  }
+
+  treeHarvestState(tree: THREE.Object3D) {
+    const state = this.treeHarvest.get(tree.userData.resourceId as string);
+    return state ? { ...state } : null;
+  }
+
+  isTreeFalling(tree: THREE.Object3D) {
+    return this.fallingTrees.has(tree.userData.resourceId as string);
+  }
+
+  restoreTreeHarvest(progress: TreeHarvestRecord) {
+    this.collisionChunks.clear();
+    this.treeHarvest = new Map(Object.entries(progress).map(([id, state]) => [id, { ...state }]));
+    this.fallingTrees.clear();
+    if (this.treeHarvest.size) for (const chunk of this.chunks.values()) this.addNature(chunk, true);
+  }
+
+  workTree(tree: THREE.Object3D, hasSaw: boolean, actor: { x: number; z: number }): TreeWorkResult | undefined {
+    if (tree.parent !== this.group || tree.userData.resource !== 'wood'
+      || typeof tree.userData.resourceId !== 'string') return undefined;
+    const distance = this.resourceDistance(tree, actor.x, actor.z);
+    if (distance >= 3.2) return undefined;
+    const id = tree.userData.resourceId as string;
+    const state = this.treeHarvest.get(id);
+    if (!state && this.treeHarvest.size >= MAX_ACTIVE_TREES) return { kind: 'limit' };
+    if ((!state || state.phase !== 'logs') && !hasSaw) return { kind: 'needs-saw' };
+    if (distance >= TREE_WORK_REACH) return { kind: 'out-of-reach' };
+    if (this.fallingTrees.has(id)) return { kind: 'falling' };
+    this.collisionChunks.clear();
+    const position = this.treeWorkPosition(tree, state, actor);
+    let result: TreeWorkResult;
+    if (!state || state.phase === 'standing') {
+      const progress = (state?.progress ?? 0) + 1;
+      if (progress < 3) {
+        this.treeHarvest.set(id, { phase: 'standing', progress: progress as 1 | 2 });
+        result = { kind: 'felling', progress, position };
+      } else {
+        const offset = planetOffset(actor, this.resourceLocation(tree));
+        const yaw = tree.userData.treeBaseYaw as number;
+        const direction = Math.hypot(offset.x, offset.z) > 0.01
+          ? Math.atan2(offset.z, offset.x) : Math.atan2(Math.sin(yaw), Math.cos(yaw));
+        const total = treeYield(this.treeHeight(tree), tree.scale.x);
+        this.treeHarvest.set(id, { phase: 'fallen', progress: 0, total, direction });
+        this.fallingTrees.set(id, 0);
+        result = { kind: 'felled', total, position };
+      }
+    } else if (state.phase === 'fallen') {
+      if (state.progress === 0) {
+        this.treeHarvest.set(id, { ...state, progress: 1 });
+        result = { kind: 'sawing', progress: 1, position };
+      } else {
+        this.treeHarvest.set(id, { phase: 'logs', total: state.total, remaining: state.total, direction: state.direction });
+        result = { kind: 'cut', total: state.total, position };
+      }
+    } else {
+      const amount = Math.min(3, state.remaining);
+      const remaining = state.remaining - amount;
+      if (remaining > 0) this.treeHarvest.set(id, { ...state, remaining });
+      else {
+        this.treeHarvest.delete(id);
+        this.depleted.add(id);
+      }
+      result = { kind: 'collected', amount, remaining, position };
+    }
+    for (const copy of [...this.group.children]) {
+      if (copy.userData.resourceId !== id) continue;
+      if (this.depleted.has(id)) this.removeResource(copy);
+      else this.applyTreeHarvest(copy);
+    }
+    return result;
+  }
+
   mineDeposit(deposit: THREE.Object3D, hasPickaxe: boolean) {
     if (deposit.parent !== this.group || typeof deposit.userData.depositId !== 'string'
       || !depositKinds.includes(deposit.userData.mineral as DepositKind)) return undefined;
     const mineral = deposit.userData.mineral as DepositKind;
     if (requiresPickaxe(mineral) && !hasPickaxe) return { mineral, needsPickaxe: true as const };
+    this.collisionChunks.clear();
     const id = deposit.userData.depositId as string;
     const progress = (this.mining.get(id) ?? 0) + 1;
     this.mining.set(id, progress);
@@ -862,6 +1188,7 @@ export class World {
   miningSnapshot() { return Object.fromEntries(this.mining); }
 
   restoreMining(progress: Record<string, number>) {
+    this.collisionChunks.clear();
     this.mining = new Map(Object.entries(progress));
     for (const object of [...this.group.children]) {
       if (object.userData.depositId && (this.mining.get(object.userData.depositId as string) ?? 0) >= 3) this.removeResource(object);
@@ -872,13 +1199,17 @@ export class World {
     const nearest = this.findNearest(x, z, range, resource);
     if (!nearest) return undefined;
     const kind = nearest.userData.resource as Resource;
+    if (kind === 'wood' && this.treeHarvest.has(nearest.userData.resourceId as string)) return undefined;
+    this.collisionChunks.clear();
     const position = this.resourcePosition(nearest);
-    this.depleted.add(nearest.userData.resourceId as string);
-    this.removeResource(nearest);
+    const id = nearest.userData.resourceId as string;
+    this.depleted.add(id);
+    for (const copy of [...this.group.children]) if (copy.userData.resourceId === id) this.removeResource(copy);
     return { resource: kind, position };
   }
 
   private removeResource(object: THREE.Object3D) {
+    this.collisionChunks.clear();
     this.group.remove(object);
     this.forgetFadedMeshes(object);
     for (const chunk of this.chunks.values()) {
@@ -891,6 +1222,7 @@ export class World {
   depletedSnapshot() { return [...this.depleted]; }
 
   restoreDepleted(ids: string[]) {
+    this.collisionChunks.clear();
     this.depleted = new Set(ids);
     for (const object of [...this.group.children]) {
       if (object.userData.resourceId && this.depleted.has(object.userData.resourceId as string)) this.removeResource(object);
@@ -901,7 +1233,9 @@ export class World {
     this.group.children.forEach(disposeObject);
     this.group.clear();
     this.chunks.clear();
+    this.collisionChunks.clear();
     this.fadedTreeMeshes.clear();
+    this.fallingTrees.clear();
     this.terrainTextures?.dispose();
     this.groundAssets?.dispose();
     this.natureAssets?.dispose();
@@ -968,7 +1302,8 @@ export class World {
     root.userData.natureMature = age === 'mature';
     root.userData.natureYoung = age === 'young';
     root.rotation.y = seededNoise(seedX, seedZ, this.seed + 481) * Math.PI * 2;
-    const height = species === 'palm' ? 2.8 : species === 'birch' ? 2.5
+    root.userData.treeBaseYaw = root.rotation.y;
+    const height = species === 'palm' ? 5.9 : species === 'birch' ? 2.5
       : species === 'pine' ? 2.35 : species === 'acacia' ? 2.1 : 1.8;
     const trunk = new THREE.Mesh(new THREE.CylinderGeometry(species === 'birch' ? 0.11 : 0.16, 0.26, height, 7),
       new THREE.MeshStandardMaterial({ color: species === 'birch' ? '#d2c9b0' : '#806044', roughness: 1 }));
@@ -1021,17 +1356,19 @@ export class World {
   }
 
   private installTreeVisual(root: THREE.Object3D) {
+    if (root.userData.harvestLogs) return;
     const family: unknown = root.userData.vegetationFamily;
     if (family !== 'deciduous' && family !== 'conifer') return;
-    if (family === 'deciduous' && !['birch', 'oak', 'maple'].includes(root.userData.treeSpecies)) return;
-    const desired: NatureTreeVariant = root.userData.natureMature
+    if (family === 'deciduous' && !['birch', 'oak', 'maple', 'palm'].includes(root.userData.treeSpecies)) return;
+    const desired: NatureTreeVariant = root.userData.treeSpecies === 'palm' ? 'palm' : root.userData.natureMature
       ? root.userData.treeSpecies === 'pine' ? 'mature-pine'
+        : root.userData.treeSpecies === 'birch' ? 'mature-birch'
         : root.userData.treeSpecies === 'fir' || root.userData.treeSpecies === 'spruce' ? 'mature-fir' : 'mature'
       : root.userData.treeSpecies === 'pine' ? 'pine' : root.userData.natureYoung ? 'young-fir' : 'default';
     if (root.userData.natureVariant === desired) return;
     let variant = desired;
     let visual = this.natureAssets?.create(family, root.rotation.y, desired);
-    if (!visual && (desired === 'mature' || desired === 'mature-pine' || desired === 'mature-fir' || desired === 'young-fir')
+    if (!visual && (desired === 'mature' || desired === 'mature-birch' || desired === 'mature-pine' || desired === 'mature-fir' || desired === 'young-fir')
       && !root.userData.natureAuthored) {
       variant = desired === 'mature-pine' ? 'pine' : 'default';
       visual = this.natureAssets?.create(family, root.rotation.y, variant);
@@ -1042,7 +1379,8 @@ export class World {
       root.remove(child);
       disposeObject(child);
     }
-    root.rotation.z = 0;
+    const state = this.treeHarvest.get(root.userData.resourceId as string);
+    if (!state || state.phase === 'standing') root.rotation.z = 0;
     root.add(visual);
     root.updateWorldMatrix(true, true);
     const bounds = new THREE.Box3().setFromObject(root);
@@ -1050,6 +1388,78 @@ export class World {
     root.userData.treeOcclusionRadius = Math.max(2.5, Math.hypot(size.x, size.z) * 0.5);
     root.userData.natureAuthored = true;
     root.userData.natureVariant = variant;
+  }
+
+  private treeHeight(tree: THREE.Object3D) {
+    if (tree.userData.treeSpecies === 'palm') return 7;
+    if (tree.userData.natureMature) return tree.userData.vegetationFamily === 'conifer' ? 9 : 7;
+    if (tree.userData.natureYoung) return 5.4;
+    return tree.userData.treeSpecies === 'pine' ? 5 : 4;
+  }
+
+  private treeTrunkLength(tree: THREE.Object3D) {
+    return this.treeHeight(tree) * 0.65;
+  }
+
+  private applyTreeHarvest(tree: THREE.Object3D) {
+    const id = tree.userData.resourceId as string;
+    const state = this.treeHarvest.get(id);
+    if (!state || state.phase === 'standing') return;
+    if (state.phase === 'logs') this.installLogs(tree, state);
+    const reflected = planetCoordinates(this.resourceLocation(tree).x, this.resourceLocation(tree).z).reflected;
+    const direction = new THREE.Vector3(Math.cos(state.direction), 0,
+      Math.sin(state.direction) * (reflected ? -1 : 1));
+    const progress = this.fallingTrees.get(id);
+    const fraction = progress === undefined ? 1 : THREE.MathUtils.smoothstep(progress / 1.6, 0, 1);
+    const tilt = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(direction.z, 0, -direction.x), fraction * Math.PI / 2);
+    const yaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), tree.userData.treeBaseYaw as number);
+    tree.quaternion.copy(tilt.multiply(yaw));
+  }
+
+  private installLogs(tree: THREE.Object3D, state: Extract<TreeHarvestState, { phase: 'logs' }>) {
+    const visible = Math.ceil(state.remaining / 3);
+    if (tree.userData.harvestLogs === visible) return;
+    if (!tree.userData.harvestLogs) {
+      let source: THREE.MeshStandardMaterial | undefined;
+      tree.traverse(child => {
+        if (!(child instanceof THREE.Mesh)) return;
+        const material = Array.isArray(child.material) ? child.material[0] : child.material;
+        if (material instanceof THREE.MeshStandardMaterial
+          && (!source || /bark|trunk/i.test(material.name))) source = material;
+      });
+      const bark = source?.clone() ?? new THREE.MeshStandardMaterial({ color: '#76563c', roughness: 1 });
+      const end = new THREE.MeshStandardMaterial({ color: '#bd9c70', roughness: 1 });
+      const logGroup = new THREE.Group();
+      logGroup.name = 'cut-logs';
+      const length = this.treeTrunkLength(tree) / Math.ceil(state.total / 3);
+      const geometry = new THREE.CylinderGeometry(0.16, 0.2, Math.max(0.25, length - 0.07), 10);
+      const [side, top, bottom] = geometry.groups;
+      geometry.clearGroups();
+      geometry.addGroup(side.start, side.count, 0);
+      geometry.addGroup(top.start, top.count + bottom.count, 1);
+      const logs = new THREE.InstancedMesh(geometry, [bark, end], Math.ceil(state.total / 3));
+      const matrix = new THREE.Matrix4();
+      for (let i = 0; i < Math.ceil(state.total / 3); i++) {
+        matrix.makeTranslation(0, length * (i + 0.5), 0);
+        logs.setMatrixAt(i, matrix);
+      }
+      logs.castShadow = true;
+      logs.receiveShadow = true;
+      logs.computeBoundingSphere();
+      logGroup.add(logs);
+      this.forgetFadedMeshes(tree);
+      for (const child of [...tree.children]) {
+        tree.remove(child);
+        disposeObject(child);
+      }
+      tree.add(logGroup);
+      tree.userData.natureAuthored = false;
+      tree.userData.harvestLogs = -1;
+      tree.position.y = this.heightAt(this.resourceLocation(tree).x, this.resourceLocation(tree).z) + tree.scale.x * 0.2;
+    }
+    const logs = tree.getObjectByName('cut-logs')?.children[0];
+    if (logs instanceof THREE.InstancedMesh) logs.count = visible;
+    tree.userData.harvestLogs = visible;
   }
 
   private cactus(x: number, y: number, z: number, seedX: number, seedZ: number) {
@@ -1082,8 +1492,19 @@ export class World {
       this.natureAssets.wind.time.value = time * 0.001;
       this.natureAssets.wind.wind.value = this.waterWind.value;
     }
+    const settled = new Set<string>();
+    for (const [id, elapsed] of this.fallingTrees) {
+      if (elapsed + dt >= 1.6) { this.fallingTrees.delete(id); settled.add(id); }
+      else this.fallingTrees.set(id, elapsed + dt);
+    }
+    if (settled.size) this.collisionChunks.clear();
     for (const object of this.group.children) {
-      if (object.userData.resource === 'wood' && !object.userData.natureAuthored) {
+      if (object.userData.resource !== 'wood') continue;
+      const id = object.userData.resourceId as string;
+      const state = this.treeHarvest.get(id);
+      if (this.fallingTrees.has(id) || settled.has(id)) {
+        this.applyTreeHarvest(object);
+      } else if ((!state || state.phase === 'standing') && !object.userData.natureAuthored) {
         object.rotation.z = Math.sin(time * 0.0012 + object.position.x * 0.2 + object.position.z * 0.1) * Math.min(0.025, wind * 0.015);
       }
     }
@@ -1163,6 +1584,7 @@ export class World {
   }
 
   private refreshTerrain() {
+    this.collisionChunks.clear();
     const matrix = new THREE.Matrix4();
     for (const chunk of this.chunks.values()) {
       const geometry = chunk.terrain.geometry;
@@ -1183,7 +1605,7 @@ export class World {
         if (object.userData.resource || object.userData.depositId) {
           const position = this.resourceLocation(object);
           object.position.y = this.heightAt(position.x, position.z)
-            + (object.userData.resource === 'stone' ? 0.12 : 0);
+            + (object.userData.resource === 'stone' ? 0.12 : object.userData.harvestLogs ? object.scale.x * 0.2 : 0);
         } else if (object instanceof THREE.InstancedMesh && object.userData.groundCover) {
           const coordinates = chunk.coverCoordinates.get(object);
           if (!coordinates) throw new Error('Missing ground-cover ownership coordinates');

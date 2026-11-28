@@ -9,8 +9,10 @@ describe('precipitation shelter', () => {
     const scene = new THREE.Scene();
     const precipitation = new Precipitation(scene);
     const points = scene.children[0] as THREE.Points;
+    const rain = scene.children[1] as THREE.LineSegments;
     const positions = points.geometry.getAttribute('position');
     const visibility = points.geometry.getAttribute('particleVisibility');
+    const rainOpacity = rain.geometry.getAttribute('rainOpacity');
     const shelter = new ShelterIndex();
     const roof: StructuralPiece = { id: 'roof', kind: 'roof', x: 0, z: 0, y: 0, level: 0, rotation: 0, open: false };
     shelter.refresh([roof]);
@@ -19,9 +21,47 @@ describe('precipitation shelter', () => {
     precipitation.update(weather, new THREE.Vector3(), 0, shelter);
     expect(visibility.getX(0)).toBe(0);
     expect(visibility.getX(1)).toBe(1);
+    expect(points.visible).toBe(weather === 'Snow');
+    expect(rain.visible).toBe(weather === 'Rain');
+    if (weather === 'Rain') {
+      expect([rainOpacity.getX(0), rainOpacity.getX(1), rainOpacity.getX(2), rainOpacity.getX(3)])
+        .toEqual([0, 0, 1, 0]);
+    }
     shelter.refresh([]);
     precipitation.update(weather, new THREE.Vector3(), 0, shelter);
     expect(visibility.getX(0)).toBe(1);
+    if (weather === 'Rain') expect(rainOpacity.getX(0)).toBe(1);
+  });
+
+  it('moves and tilts rain with wind, wraps its local pool, and leaves snow independent of wind', () => {
+    const scene = new THREE.Scene();
+    const precipitation = new Precipitation(scene);
+    const points = scene.children[0] as THREE.Points;
+    const rain = scene.children[1] as THREE.LineSegments;
+    const positions = points.geometry.getAttribute('position');
+    const streaks = rain.geometry.getAttribute('position');
+    positions.setXYZ(0, 11.99, 8, 0);
+
+    precipitation.update('Rain', new THREE.Vector3(2, 3, 4), 0.1, undefined, 1);
+    expect(positions.getX(0)).toBeCloseTo(-11.9);
+    expect(positions.getY(0)).toBeCloseTo(7);
+    expect(streaks.getX(0)).toBeCloseTo(positions.getX(0));
+    expect(streaks.getY(1)).toBeGreaterThan(streaks.getY(0));
+    expect(streaks.getX(1)).toBeLessThan(streaks.getX(0));
+    expect(rain.position.toArray()).toEqual([2, 3, 4]);
+
+    precipitation.update('Snow', new THREE.Vector3(), 0.1, undefined, 1);
+    expect(positions.getX(0)).toBeCloseTo(-11.9);
+    expect(positions.getY(0)).toBeCloseTo(6.85);
+    expect(points.visible).toBe(true);
+    expect(rain.visible).toBe(false);
+
+    precipitation.update('Storm', new THREE.Vector3(), 0, undefined, 0);
+    expect(streaks.getX(1)).toBeCloseTo(streaks.getX(0));
+    expect(points.visible).toBe(false);
+    expect(rain.visible).toBe(true);
+    precipitation.update('Clear', new THREE.Vector3(), 0);
+    expect(points.visible || rain.visible).toBe(false);
   });
 
   describe('material impacts', () => {

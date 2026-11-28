@@ -36,6 +36,7 @@ async function positionAt(page: Page, point: Point) {
     record.vehicle = { x: point.x + 35, z: point.z + 35 };
     record.wildlife = [];
     record.tools = ['pickaxe'];
+    record.selectedWeapon = 'fists';
     record.calendar = { minute: 720, day: 1, speed: 0.5 };
     world.dispose();
     await new Promise<void>((resolve, reject) => {
@@ -72,6 +73,8 @@ test('real wood, stone and combat contacts emit bounded material effects', async
   await mkdir(directory, { recursive: true });
 
   await positionAt(page, { x: tree.x + 1, z: tree.z + 0.5 });
+  await page.locator('#toolHubButton').click();
+  await page.locator('[data-hub="saw"]').click();
   await page.keyboard.press('Space');
   await expect.poll(async () => (await state(page)).lastImpactEffect).toBe('wood');
   expect((await state(page)).impactEffects).toBeGreaterThan(0);

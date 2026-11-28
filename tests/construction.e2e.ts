@@ -1,9 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
-import { mkdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { sawTree, timberAction } from './timber-helpers';
 
 type Piece = { id: string; kind: string; x: number; z: number; y: number; level: number; rotation: number; open: boolean; automatic?: boolean; roofShape?: { style: string; axis: number; heights: number[] } };
-type World = { version: number; resources: { wood: number }; ingots: { glass: number }; structures: Piece[]; pendingRoofs?: Array<{ y: number; level: number }>; player: { x: number; y: number; z: number }; npc: { x: number; z: number }; vehicle: { x: number; z: number } };
+type World = { version: number; resources: { wood: number }; ingots: { glass: number }; structures: Piece[]; roofStyle?: string; pendingRoofs?: Array<{ y: number; level: number }>; player: { x: number; y: number; z: number }; npc: { x: number; z: number }; vehicle: { x: number; z: number } };
 
 async function readRecord(page: Page, key = 'primary') {
   return page.evaluate(key => new Promise<World>((resolve, reject) => {
@@ -35,6 +35,8 @@ async function setFixture(page: Page, scenario: 'legacy' | 'door') {
           data.version = 6;
           delete data.structures;
           delete data.autoRoof;
+          delete data.roofStyle;
+          delete data.roofAxis;
           data.resources.wood = 50;
         } else {
           const door = data.structures.find((piece: Piece) => piece.kind === 'door');
@@ -57,6 +59,99 @@ async function save(page: Page) {
   await expect(page.locator('#toast')).toHaveText('World saved');
   await page.locator('#resumeGame').click();
 }
+
+test('opaque gable roof covers walls behind it in WebGL', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => {
+    if (message.type() === 'error' && /shader|webglprogram/i.test(message.text())) errors.push(message.text());
+  });
+  await page.goto('./');
+  const samples = await page.evaluate(async () => {
+    const THREE = await import('/NewDawn/node_modules/three/build/three.module.js');
+    const { ConstructionRenderer } = await import('/NewDawn/src/construction-render.ts');
+    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setSize(320, 200);
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color('#a8c9d0');
+    scene.add(new THREE.AmbientLight('white', 1));
+    const camera = new THREE.PerspectiveCamera(42, 320 / 200, 0.1, 160);
+    camera.position.set(7.7, 11.17, 7.42);
+    camera.lookAt(0.215, 5.63, -0.143);
+    const construction = new ConstructionRenderer();
+    const piece = (id: string, kind: Piece['kind'], x: number, z: number, rotation = 0): Piece =>
+      ({ id, kind, x, z, y: 3.25, level: 0, rotation, open: false });
+    const pieces: Piece[] = [
+      piece('floor-a', 'floor', 2, -4), piece('floor-b', 'floor', 4, -4),
+      piece('frame', 'doorframe', 2, -3), piece('wall-a', 'wall', 1, -4, 1),
+      piece('wall-b', 'wall', 4, -3), piece('wall-c', 'wall', 2, -5),
+      piece('wall-d', 'wall', 5, -4, 1), piece('wall-e', 'wall', 4, -5),
+      { ...piece('roof-a', 'roof', 2, -4), roofShape: { style: 'gable', axis: 1, heights: [0, 0.9, 0] } },
+      { ...piece('roof-b', 'roof', 4, -4), roofShape: { style: 'gable', axis: 1, heights: [0, 0.9, 0] } },
+    ];
+    construction.refresh(pieces);
+    scene.add(construction.group);
+    const meshes = construction.group.children.filter((mesh: any) => mesh.visible && mesh.userData.constructionKind);
+    for (const mesh of meshes) {
+      const material = (mesh as InstanceType<typeof THREE.InstancedMesh>).material as InstanceType<typeof THREE.MeshStandardMaterial>;
+      material.map = null;
+      material.normalMap = null;
+      material.needsUpdate = true;
+    }
+    renderer.render(scene, camera);
+    const canvas = document.createElement('canvas');
+    canvas.width = 320;
+    canvas.height = 200;
+    const context = canvas.getContext('2d')!;
+    context.drawImage(renderer.domElement, 0, 0);
+    const full = context.getImageData(0, 0, 320, 200).data;
+    const raycaster = new THREE.Raycaster();
+    let roofPixels = 0;
+    const roofPixelCoordinates: Array<[number, number]> = [];
+    for (let y = 0; y < 200; y += 2) for (let x = 0; x < 320; x += 2) {
+      raycaster.setFromCamera(new THREE.Vector2((x + 0.5) / 160 - 1, 1 - (y + 0.5) / 100), camera);
+      if (raycaster.intersectObjects(meshes, false)[0]?.object.userData.constructionKind === 'roof') {
+        roofPixels++;
+        roofPixelCoordinates.push([x, y]);
+      }
+    }
+    for (const mesh of meshes) if (mesh.userData.constructionKind !== 'roof') mesh.visible = false;
+    renderer.render(scene, camera);
+    context.drawImage(renderer.domElement, 0, 0);
+    const roofOnly = context.getImageData(0, 0, 320, 200).data;
+    let wrong = 0;
+    for (const [x, y] of roofPixelCoordinates) {
+      const index = (y * 320 + x) * 4;
+      if (Math.max(...[0, 1, 2].map(channel => Math.abs(full[index + channel] - roofOnly[index + channel]))) > 3) wrong++;
+    }
+    renderer.dispose();
+    return { roofPixels, wrong };
+  });
+  expect(samples.roofPixels).toBeGreaterThan(40);
+  expect(samples.wrong).toBeLessThan(samples.roofPixels * 0.01);
+  expect(errors).toEqual([]);
+});
+
+test('preserves a selected flat roof across reload and uses gable for a new world', async ({ page }) => {
+  await page.goto('./');
+  await page.locator('#newGame').click();
+  await expect(page.locator('#roofStyle')).toHaveValue('gable');
+  await page.locator('[data-tool="build"]').click();
+  await page.locator('[data-building="floor"]').click();
+  await page.locator('#roofControls summary').click();
+  await page.locator('#roofStyle').selectOption('flat');
+  await page.keyboard.press('Escape');
+  await save(page);
+  expect((await readRecord(page)).roofStyle).toBeUndefined();
+  await page.reload();
+  await page.locator('#continueGame').click();
+  await expect(page.locator('#pauseButton')).toBeVisible();
+  await expect(page.locator('#roofStyle')).toHaveValue('flat');
+  await page.locator('#pauseButton').click();
+  await page.locator('#returnMenu').click();
+  await page.locator('#newGame').click();
+  await expect(page.locator('#roofStyle')).toHaveValue('gable');
+});
 
 test('floor cover clears on placement, persists on reload and returns on removal', async ({ page }) => {
   test.setTimeout(120000);
@@ -117,7 +212,7 @@ test('floor cover clears on placement, persists on reload and returns on removal
   await expect.poll(async () => (await readRecord(page)).structures.length).toBe(0);
 });
 
-test('builds a room through the interface and reshapes its paid roof', async ({ page }) => {
+test('builds a room through the interface and reshapes its paid roof', async ({ page }, testInfo) => {
   test.setTimeout(300000);
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -253,12 +348,7 @@ test('builds a room through the interface and reshapes its paid roof', async ({ 
   expect(built.structures.filter(piece => piece.kind === 'roof' && piece.roofShape?.style === 'gable')).toHaveLength(2);
   await page.keyboard.press('Escape');
   await page.waitForTimeout(500);
-  const review = join('art-review', 'batch-004b-r1');
-  const r2Review = join('art-review', 'batch-004b-r2');
-  await mkdir(review, { recursive: true });
-  await mkdir(r2Review, { recursive: true });
-  await page.screenshot({ path: join(review, 'player-built-gable.png') });
-  await page.screenshot({ path: join(r2Review, 'player-built-gable.png') });
+  await page.screenshot({ path: testInfo.outputPath('player-built-gable.png') });
   await page.locator('#pauseButton').click();
   await page.locator('#cameraFollow').uncheck();
   await page.locator('#resumeGame').click();
@@ -291,8 +381,7 @@ test('builds a room through the interface and reshapes its paid roof', async ({ 
   await walkTo(doorwayFloor);
   await expect(page.locator('#shelterStatus')).toHaveText('SHELTERED');
   await page.waitForTimeout(500);
-  await page.screenshot({ path: join(review, 'player-inside-gable.png') });
-  await page.screenshot({ path: join(r2Review, 'player-inside-gable.png') });
+  await page.screenshot({ path: testInfo.outputPath('player-inside-gable.png') });
   await save(page);
   const entered = await readRecord(page);
   expect(entered.structures.find(piece => piece.kind === 'door')?.open).toBe(true);
@@ -330,6 +419,7 @@ for (const viewport of [
       await page.reload();
       await page.locator('#continueGame').click();
       await expect(page.locator('#pauseButton')).toBeVisible();
+      await expect(page.locator('#roofStyle')).toHaveValue('flat');
       expect((await readRecord(page, 'pre-construction-backup')).version).toBe(6);
       await page.locator('[data-tool="build"]').click();
 
@@ -718,7 +808,16 @@ test('retries an unpaid roof after gathering wood and reloads without duplicate 
   await page.reload();
   await page.locator('#continueGame').click();
   expect((await readRecord(page)).pendingRoofs).toHaveLength(1);
-  await page.keyboard.press('Space');
+  const treeId = await page.evaluate(() => {
+    const state = (window as Window & { __newDawnState: () => {
+      trees: Array<{ id: string; x: number; z: number }>; player: { x: number; z: number };
+    } }).__newDawnState();
+    return state.trees.sort((a, b) => Math.hypot(a.x - state.player.x, a.z - state.player.z)
+      - Math.hypot(b.x - state.player.x, b.z - state.player.z))[0]?.id;
+  });
+  expect(treeId).toBeDefined();
+  await sawTree(page, treeId!);
+  await timberAction(page);
   await expect(page.locator('#toast')).toHaveText('Room roofed · 2 wood');
   await expect.poll(async () => (await readRecord(page)).structures.filter(piece => piece.kind === 'roof').length).toBe(1);
   const finished = await readRecord(page);

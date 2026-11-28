@@ -1,5 +1,10 @@
 import * as THREE from 'three';
 import type { Species } from './wildlife';
+import { disposeAuthoredAnimal } from './authored-animal';
+
+export function updateBirdFlightHeight(height: number, flying: boolean, dt: number) {
+  return THREE.MathUtils.damp(height, flying ? 2.5 : 0, flying ? 2 : 1.5, dt);
+}
 
 export function createAnimal(species: Species, variant: number) {
   const root = new THREE.Group();
@@ -61,7 +66,7 @@ export function createAnimal(species: Species, variant: number) {
         leg.name = `leg-${side}-${z}`;
       }
     }
-    root.scale.setScalar(0.9);
+    root.scale.setScalar(0.3);
     return root;
   }
   const isLarge = species === 'bear' || species === 'moose' || species === 'cow' || species === 'reindeer';
@@ -130,10 +135,11 @@ export function animateAnimal(model: THREE.Group, species: Species, moving: bool
 }
 
 export function disposeAnimal(model: THREE.Group) {
+  disposeAuthoredAnimal(model);
   const geometries = new Set<THREE.BufferGeometry>();
   const materials = new Set<THREE.Material>();
   model.traverse(object => {
-    if (!(object instanceof THREE.Mesh)) return;
+    if (!(object instanceof THREE.Mesh) || object.userData.animalShared) return;
     geometries.add(object.geometry);
     for (const material of Array.isArray(object.material) ? object.material : [object.material]) materials.add(material);
   });

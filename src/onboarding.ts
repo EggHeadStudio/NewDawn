@@ -14,7 +14,7 @@ export function isOnboardingState(value: unknown): value is OnboardingState {
 export function onboardingObjective(state: OnboardingState, wood: number, hasFloor: boolean, recruited: boolean) {
   if (state.mode !== 'guide') return null;
   if (!state.gathered) return 'Gather a resource · Space / A';
-  if (!state.openedPack) return 'Open Pack · I / Pack';
+  if (!state.openedPack) return 'Open Pack · I / Tools → Pack';
   if (!hasFloor && wood < 2) return 'Gather 2 wood for a floor';
   if (!hasFloor) return 'Build a modular floor · B / Build';
   if (!recruited) return 'Meet and recruit Mira · E / B';

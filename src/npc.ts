@@ -6,6 +6,7 @@ export interface NpcState {
   recruited: boolean;
   job: NpcJob;
   carrying: 'wood' | 'stone' | null;
+  carryingAmount?: number;
 }
 
 export function chooseNpcActivity(state: NpcState, hasStorage: boolean, enemyNearby: boolean): NpcActivity {

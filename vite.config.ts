@@ -25,13 +25,29 @@ function offlineShell(): Plugin {
       const ground = readdirSync(resolve('public/assets/environment/ground'))
         .filter(name => name.endsWith('.glb'))
         .map(name => `./assets/environment/ground/${name}`);
+      const construction = readdirSync(resolve('public/assets/environment/construction'))
+        .filter(name => /^weathered-wood-(color|normal)\.jpg$/.test(name))
+        .map(name => `./assets/environment/construction/${name}`);
       const core = [
         './', './manifest.webmanifest', './icon-192.png', './icon-512.png',
         './icon-maskable-192.png', './icon-maskable-512.png', './apple-touch-icon.png',
         './favicon.ico', './favicon-16x16.png', './favicon-32x32.png',
         './assets/branding/newdawn-logo.png', './assets/environment/sky/moon.jpg',
         './assets/environment/sky/moon-LICENSE.txt',
-        ...assets.map(name => `./${name}`), ...characters, ...terrain, ...trees, ...ground,
+        './assets/characters/equipment/hiking-backpack.glb',
+        './assets/animals/sheep.glb',
+        './assets/animals/mountain-hare.glb',
+        './assets/animals/dairy-cow.glb',
+        './assets/animals/hooded-crow.glb',
+        './assets/animals/red-squirrel.glb', './assets/animals/red-squirrel-LICENSE.txt',
+        './assets/animals/gray-wolf.glb', './assets/animals/gray-wolf-LICENSE.txt',
+        './assets/animals/red-fox.glb',
+        './assets/animals/roe-deer.glb',
+        './assets/animals/moose.glb',
+        './assets/animals/grizzly-bear.glb', './assets/animals/grizzly-bear-LICENSE.txt',
+        './assets/animals/reindeer.glb',
+        './assets/environment/trees/vinish-trees-LICENSE.txt',
+        ...assets.map(name => `./${name}`), ...characters, ...terrain, ...trees, ...ground, ...construction,
       ];
       const source = `
 const CACHE = ${JSON.stringify(`new-dawn-shell-${version}`)};

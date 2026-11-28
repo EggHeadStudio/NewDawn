@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { InstancedMesh, Mesh } from 'three';
+import { collectTree, sawTree } from './timber-helpers';
 
 type Tree = { id: string; x: number; z: number; family: string; authored: boolean };
 type State = { trees: Tree[]; player: { x: number; z: number } };
@@ -172,7 +173,8 @@ test('authored broadleaf trees gather and remain depleted after reload', async (
   const directory = join(process.cwd(), 'art-review', 'batch-005d-a2', 'gather');
   await mkdir(directory, { recursive: true });
   await page.screenshot({ path: join(directory, 'before.png') });
-  await page.keyboard.press('Space');
+  await sawTree(page, tree.id);
+  await collectTree(page, tree.id);
   await expect.poll(async () => (await state()).trees.some(item => item.id === tree.id)).toBe(false);
   await expect(page.locator('#toast')).toContainText('wood');
   await page.screenshot({ path: join(directory, 'after.png') });

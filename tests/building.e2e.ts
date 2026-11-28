@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { collectTree, sawTree, walkTo } from './timber-helpers';
 
 const viewports = [
   { name: 'portrait', width: 390, height: 844, touch: true },
@@ -77,6 +78,7 @@ async function setScenario(page: Page, scenario: 'npc' | 'vehicle' | 'combat') {
         const data = get.result;
         data.version = 11;
         delete data.planetPositions;
+        data.selectedWeapon = 'fists';
         if (scenario === 'npc') {
           data.resources.wood = 10;
           data.resources.stone = 10;
@@ -146,6 +148,7 @@ for (const viewport of viewports) {
       await page.locator('#continueGame').click();
       await expect(page.locator('#survivorLabel')).toHaveText('Survivor');
 
+      await page.locator('#toolHubButton').click();
       await page.locator('#inventoryButton').click();
       await expect(page.locator('#craftPanel')).toBeVisible();
       const craft = await page.locator('#craftPanel').boundingBox();
@@ -356,8 +359,21 @@ test.describe('touch camera gestures', () => {
     await expect(page.locator('#characterPanel')).toBeVisible();
     await page.locator('#finishCharacter').click();
     await page.locator('#newGame').click();
-    await page.keyboard.press('Space');
+    type Nature = { player: { x: number; z: number }; trees: Array<{ id: string; x: number; z: number; authored: boolean }>;
+      deposits: Array<{ x: number; z: number }> };
+    const nature = () => page.evaluate(() => (window as Window & { __newDawnState: () => Nature }).__newDawnState());
+    await expect.poll(async () => (await nature()).trees.some(tree => tree.authored), { timeout: 30000 }).toBe(true);
+    const initial = await nature();
+    const tree = initial.trees.filter(item => item.authored
+      && initial.deposits.every(deposit => Math.hypot(deposit.x - item.x, deposit.z - item.z) > 2))
+      .sort((a, b) => Math.hypot(a.x - initial.player.x, a.z - initial.player.z)
+        - Math.hypot(b.x - initial.player.x, b.z - initial.player.z))[0];
+    expect(tree).toBeDefined();
+    await walkTo(page, tree);
+    await sawTree(page, tree.id);
+    await collectTree(page, tree.id);
     await expect(page.locator('#toast')).toContainText('wood');
+    await walkTo(page, initial.player);
     await page.keyboard.press('e');
     await expect(page.locator('#toast')).toHaveText('Excavated terrain');
     await save(page);
@@ -368,6 +384,7 @@ test.describe('touch camera gestures', () => {
     await setScenario(page, 'npc');
     await page.reload();
     await page.locator('#continueGame').click();
+    await page.locator('#toolHubButton').click();
     await page.locator('#inventoryButton').click();
     await expect(page.locator('#craftPanel')).toBeVisible();
     await page.keyboard.press('e');

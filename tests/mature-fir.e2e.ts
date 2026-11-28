@@ -3,6 +3,7 @@ import type { Page } from '@playwright/test';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { resolve } from 'node:path';
+import { collectTree, sawTree } from './timber-helpers';
 
 type Fir = { id: string; x: number; z: number };
 
@@ -120,7 +121,8 @@ for (const viewport of [{ width: 1280, height: 720 }, { width: 390, height: 844 
           trees: Array<{ id: string; variant: string }>
         } }).__newDawnState().trees.some(item => item.id === id), tree.id);
         await expect.poll(present, { timeout: 30000 }).toBe(true);
-        await page.keyboard.press('Space');
+        await sawTree(page, tree.id);
+        await collectTree(page, tree.id);
         await expect.poll(present).toBe(false);
         await expect(page.locator('#toast')).toContainText('wood');
         await page.locator('#pauseButton').click();

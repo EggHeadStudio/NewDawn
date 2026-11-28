@@ -29,6 +29,7 @@ type Fixture = {
   wildlife: unknown[];
   depleted: string[];
   mining: Record<string, number>;
+  resources: { wood: number; stone: number };
   stones: number;
   selectedWeapon: string;
   structures: Array<{ id: string; kind: string; x: number; y: number; z: number; level: number; rotation: number; open: boolean }>;
@@ -275,7 +276,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }
   test.describe(`${viewport.width}x${viewport.height}`, () => {
     test.use({ viewport, hasTouch: true, isMobile: true });
 
-    test('collects and throws stones while moving, then uses fists and jump', async ({ page }) => {
+    test('collects and throws stones while moving, then uses fists and jump', async ({ page }, testInfo) => {
       test.setTimeout(150000);
       await page.goto('./');
       await page.locator('#newGame').click();
@@ -306,6 +307,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }
         record.npc = { x: x + 30, z: z + 30 };
         record.vehicle = { x: x + 35, z: z + 35 };
         record.wildlife = [];
+        record.resources.wood = 3;
         record.depleted = world.group.children.filter(object => object !== rock && object.userData.resourceId
           && Math.hypot(object.position.x - x, object.position.z - z) < 20).map(object => object.userData.resourceId);
         for (const object of world.group.children) {
@@ -347,7 +349,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }
       await page.locator('#toolHubButton').tap();
       await page.locator('[data-hub="stones"]').tap();
       await expect(page.locator('#weaponButton')).toHaveAttribute('aria-label', 'Throw stone, 2 remaining');
-      const evidence = join('art-review', 'batch-005c-p2c', 'mobile-ui', 'action-pad');
+      const evidence = testInfo.outputPath();
       await mkdir(evidence, { recursive: true });
       await page.screenshot({ path: join(evidence, `stone-equipped-${viewport.width}x${viewport.height}.png`) });
       await save(page);
@@ -510,6 +512,11 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }
       await expect(page.locator('#stick')).toHaveAttribute('style', 'transform: translate(0px, 0px);');
       await cancelSession.detach();
 
+      await page.locator('#toolHubButton').tap();
+      await page.locator('#inventoryButton').tap();
+      await page.locator('[data-craft="axe"]').tap();
+      await expect(page.locator('#panelNotification')).toHaveText('axe crafted');
+      await page.locator('#closeCraft').tap();
       const icons: string[] = [];
       for (const weaponName of ['stick', 'axe', 'fists']) {
         await page.locator('#toolHubButton').tap();

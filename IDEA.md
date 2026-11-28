@@ -34,6 +34,7 @@ The player starts with modest possessions and must be able to choose a life: wan
 ## 3. The planet, biomes, Atlas and seasons
 
 - Canonical spherical planetary geography with approximately Earth radius (6,371 km); meter-based local movement, correct longitudes/poles, camera-relative controls, local tangent frames and floating-origin rendering.
+- Preserve the **1:1 Earth-sized planet**, not a scaled-down world. Its vast distances should make ships, railways, aircraft and appropriately earned fast travel meaningful. Aim for an exceptionally large, explorable game world without claiming a size record before it can be verified; geography and intercontinental crossings must be demonstrated in gameplay.
 - Streaming near gameplay tiles, medium terrain, distant landscape LOD, workers/priority queues, bounded cache/mesh memory, no whole-planet high-resolution allocations.
 - Coherent continents, seas, archipelagos, plateaus, natural mountains, lakes, rivers, wetlands, caves, coastlines, deserts, tundra, permanent polar ice, active and dormant volcanoes, lava fields and volcanic succession ecology.
 - Climate linked to latitude, altitude, relief, continentality, rainfall, biomes and season. Northern/southern seasonal reversal; four seasons, tropical rainy/dry seasons, gradual weather and ecological response.
@@ -75,6 +76,7 @@ The player starts with modest possessions and must be able to choose a life: wan
 - Material progression: wood, salvaged metal, stone, clay, kiln-fired bricks, glass, concrete and industrial materials. Real brick wall elements; clay + kiln + fuel and salvage as sources. Quality/power/durability vary with material.
 - Smart foundation grading and terrain tools (dig, raise, flatten, smooth, slope, brush radius, material accounting, safe undo). Continuous dirt/gravel/stone roads with curves/intersections, terrain fit and vehicle/nav compatibility.
 - Working gable/shed/advanced roofs, roof generation preview, cost/fallback feedback, indoor weather protection; physical occupancy/line-of-sight for enemies. Furniture, locks, lighting, storage, workshops and eventually NPC construction.
+- Long-term creative range: combine different materials and piece shapes into small homes, skyscrapers, shopping centers and other large buildings, with furnished interiors and functional lighting in individual rooms. Players should eventually be able to build together; shared multiplayer construction remains a later goal, not an existing feature.
 - True per-face UV texture painting, material presets, brush cursor, front-surface targeting, stroke interpolation, bounded textures, undo/redo and save. Protect surrounding terrain and opposite faces.
 - Concealed building-level electricity from external supply; wind/solar/generators, power meters, devices, batteries, networks and later water, machinery and automation.
 - Structural durability, impacts, repair, dismantling, partial collapses and performance-limited debris. Avoid gigantic permanent rigid-body counts.
@@ -94,6 +96,8 @@ The player starts with modest possessions and must be able to choose a life: wan
 - Materials and production: raw ore, coal, stone, clay, sand, limestone, planks, kiln-fired bricks, metal ingots, glass, components, mechanical assemblies, batteries, engine parts, pipes, fuel and equipment. Real workstations and inventories. Chemistry uses fictional abstract ingredients for hazardous outcomes.
 - Salvage/repair can jump ahead of manufacturing capability but remains limited by condition, scarce spare parts, fuel and tools. Later production chains can manufacture replacement components.
 - Carts, mounts, cars, trucks, tractors, buses, trailers, trains, rafts, boats, cargo ships, aircraft, helicopters and infrastructure (roads, bridges, rails, ports, airports). Real ownership, cargo, energy/fuel, wear, damage, repairs and NPC use.
+- Vehicles should be visually convincing and feel like distinct machines, with weight, suspension or suitable water/air motion, tilt, traction and responses to terrain where applicable. The existing rover is a foundation, not the final quality target.
+- **Passenger travel as a future life experience:** multiple ships can serve routes around the planet, with ticket prices, a captain and crew, cabins, lifeboats, shops and entertainment such as a disco. Players can board, move around and live aboard during potentially multi-day voyages. Passenger trains follow real rail routes, charge fares and offer explorable cabins or other onboard spaces for travel between settlements and countries. Exact schedules, passage of time and optional time-skipping remain design decisions. Simulate nearby journeys in detail and distant services at bounded scale.
 - Meaningful research discoveries and creative experiments with persistent unlocks and visible gameplay consequences. Do not tie all content to rigid historical eras.
 
 ## 10. NPCs, self-developing society and politics
@@ -101,8 +105,10 @@ The player starts with modest possessions and must be able to choose a life: wan
 - Persistent identities, skills, personalities, relationships, needs, homes, professions, belongings, life events and schedules. NPCs understand barriers, work, eat, rest, move goods, use workstations and build.
 - Independent settlements choose suitable sites, establish actual buildings, produce/consume finite goods, grow, trade, migrate, build roads and experience weather/raids while far away through bounded coarse simulation. No resource cloning on load or despawn.
 - Household property and wealth, trading, barter, currency, bounded dynamic prices, merchants and routes. Honest stock and payment conservation.
+- Future countries have their own currencies, with exchange rates influenced by their economic conditions and trade rather than unexplained randomness alone. Whether rates can also fluctuate randomly, and the precise monetary rules, remain open design decisions.
 - Local reputation/fame/trust/influence/hostility, citizenship, territorial rights, player property protection, councils, mayors/chiefs and legitimate elections with personality/context-based voters, kingdoms/succession and bilateral diplomacy.
 - Alliances, treaties, disputes, raids, war, peace, territorial shifts and tangible civilian/economic effects; alien factions are not automatically identical to human politics.
+- Over time, autonomous groups may grow into large armies, contest settlements and territory, undertake underground projects or develop advanced space technology. Represent distant populations and campaigns at an appropriate aggregate level while keeping nearby people and consequences tangible; these are long-term simulation goals, not current capabilities.
 - The World Atlas shows **actual** settlement state, diplomatic relations, history and active risks and supports map-driven planning, trade-route proposals, markers and someday political decisions when the player has legitimate authority.
 - Every meaningful player and world event can enter a bounded world-history journal.
 
@@ -114,6 +120,7 @@ The player starts with modest possessions and must be able to choose a life: wan
 - Real-time changes to fog, draw distance, camera distance, lighting, torch and tool previews. Optimized presets and visual accessibility, readable labels/tooltips, FI/EN translations.
 - Photo Mode with free camera, focus/exposure options, HUD hide and images taken from the actual game; exploration journal and codex.
 - Progressive asset streaming and LOD, model/texture compression, pooled effects, quality presets, device-aware budgets. Support offline PWA, saves in IndexedDB, safe updates and export/import.
+- The visual quality of the 3D world, environments and motion remains a central product priority alongside rapid progress across playable systems. Work toward a potentially commercial game without treating a business model, platform or release date as already decided; preserve appropriate asset rights.
 
 ## 12. Game architecture and future multiplayer
 

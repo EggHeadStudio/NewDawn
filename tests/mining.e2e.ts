@@ -83,6 +83,7 @@ for (const viewport of [
       };
       await gather();
       await expect(page.locator('#toast')).toHaveText('Craft a pickaxe to mine this deposit');
+      await page.locator('#toolHubButton').click();
       await page.locator('#inventoryButton').click();
       await page.locator('[data-craft="pickaxe"]').click();
       await page.locator('#closeCraft').click();
@@ -92,6 +93,7 @@ for (const viewport of [
       await page.reload();
       await page.locator('#continueGame').click();
       await expect(page.locator('#pauseButton')).toBeVisible();
+      await page.locator('#toolHubButton').click();
       await page.locator('#inventoryButton').click();
       await expect(page.locator('#mineralInventory')).toContainText('iron ore 1');
       await page.locator('#closeCraft').click();
@@ -117,6 +119,7 @@ for (const viewport of [
       await page.reload();
       await page.locator('#continueGame').click();
       await expect(page.locator('#pauseButton')).toBeVisible();
+      await page.locator('#toolHubButton').click();
       await page.locator('#inventoryButton').click();
       await expect(page.locator('#mineralInventory')).toContainText('iron ore 3');
     });
@@ -266,6 +269,7 @@ test('builds a smelter, resumes a fuelled job after reload and forges an iron pi
   if (viewport.touch) await page.locator('#actionA').tap();
   else await page.keyboard.press('Space');
   await expect(page.locator('#toast')).toHaveText('+2 ironOre · 1/3');
+  await page.locator('#toolHubButton').click();
   await page.locator('#inventoryButton').click();
   await expect(page.locator('#mineralInventory')).toContainText('iron pickaxe');
   await expect(page.locator('#mineralInventory')).toContainText('iron ore 2');
