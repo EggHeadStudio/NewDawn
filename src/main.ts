@@ -6,7 +6,7 @@ import { TreeClearance } from './tree-occlusion';
 import { TREE_WORK_REACH } from './tree-harvest';
 import { atlasBiomeAtCell, atlasBiomeColors } from './atlas';
 import { cameraPitchView, cameraRelativeMovement, clampCameraDistance, clampCameraPitch, dampAngle, defaultCameraSettings } from './camera';
-import { buildingCosts, buildingRadius, canAfford, placementProblem, craftTool, isNight, spend, type BuildingKind, type Inventory, type Tool } from './gameplay';
+import { buildingCosts, buildingRadius, canAfford, canEquipTool, placementProblem, craftTool, isNight, spend, type BuildingKind, type HandTool, type Inventory, type Tool } from './gameplay';
 import { isSaveData, toolsFromSave } from './save';
 import { chooseNpcActivity, type NpcJob, type NpcState } from './npc';
 import { areConnected, updatePower, type PowerNode } from './power';
@@ -35,7 +35,7 @@ import { PlanetaryRuntimeFrame } from './runtime-frame';
 import { addPiece, FLOOR_HEIGHT, floorSurface, isEdgePiece, pieceBlocks, pieceCosts, removePiece, replacePiece, replacementProblem, replacementTarget, snapPiece, suggestFloorEdge, type PieceKind, type PieceRotation, type RoofStyle, type StructuralPiece } from './construction';
 import { reconcileRoof, reshapeRoof, type RoofAxis, type RoofRequest } from './roof';
 import { ConstructionRenderer, createPieceGhost } from './construction-render';
-import { emptyMinerals, requiresPickaxe, type DepositKind } from './economy';
+import { emptyMinerals, miningToolRequirement, requiresPickaxe, type DepositKind } from './economy';
 import { advanceSmelting, startSmelting, type SmeltableOre, type SmeltingJob } from './smelting';
 import { atmosphericFogRange, environmentLighting, moonlitSceneLighting } from './environment-lighting';
 import { celestialState, Sky } from './sky';
@@ -65,7 +65,7 @@ function isTorchPost(record: BuildingRecord): record is TorchPostRecord {
   return record.kind === 'torchpost' && typeof record.id === 'string' && typeof record.lit === 'boolean';
 }
 type BuildKind = BuildingKind | PieceKind;
-type SelectedWeapon = 'fists' | 'stick' | 'axe' | 'stones' | 'saw';
+type SelectedWeapon = HandTool;
 
 const icons = {
   fists: '<path d="M5 11V8a2 2 0 0 1 4 0V6a2 2 0 0 1 4 0v1a2 2 0 0 1 4 0v2a2 2 0 0 1 3 2v4c0 3-2 5-5 5h-3c-3 0-5-2-6-4l-2-3a2 2 0 0 1 1-2Z"/><path d="M9 8v4m4-5v5m4-3v3"/>',
@@ -203,6 +203,7 @@ app.innerHTML = `
       <button data-hub="stick" aria-pressed="false">${icon('stick')}<span>Stick</span></button>
       <button data-hub="axe" aria-pressed="false">${icon('axe')}<span>Axe</span></button>
       <button data-hub="saw" aria-pressed="false">${icon('saw')}<span>Saw</span></button>
+      <button data-hub="pickaxe" aria-pressed="false">${icon('pickaxe')}<span>Pickaxe</span></button>
       <button data-hub="stones" aria-pressed="false">${icon('stones')}<span id="stoneHubCount">Stones 0</span></button>
       <button data-hub="road">╬<span>Road</span></button>
       <button data-hub="terrain">◇<span>Terrain</span></button>
@@ -228,7 +229,7 @@ app.innerHTML = `
   <div id="craftPanel" class="panel pack-panel hidden" role="dialog" aria-labelledby="packTitle">
     <button id="closeCraft" class="close" aria-label="Close pack">×</button>
     <h2 id="packTitle">PACK &amp; CRAFTING</h2>
-    <p>Your starter saw is in Tools. Select it to fell trees and saw trunks; gather the cut wood separately. A pickaxe is used automatically for mining.</p>
+    <p>Your starter saw is in Tools. Select it to fell trees and saw trunks; gather the cut wood separately. Craft and select a pickaxe in Tools to mine hard deposits.</p>
     <h3>CRAFT</h3>
     <div class="pack-grid">
       <button data-craft="axe" class="pack-action" aria-label="Craft axe, 3 wood and 2 stone">${icon('axe')}<strong>Axe</strong><small>${icon('wood')} 3 ${icon('stone')} 2</small></button>
@@ -739,16 +740,24 @@ addEventListener('keydown', event => {
     else if (performance.now() - lastPointerUnlock > 300) togglePause();
     return;
   }
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement
+    || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLElement && event.target.isContentEditable) return;
   if (event.code === 'KeyI' && gameStarted && !document.querySelector('#craftPanel')!.classList.contains('hidden')) {
     document.querySelector('#craftPanel')!.classList.add('hidden');
     return;
   }
-  if (!gameStarted || event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || gameplayBlocked()
+  if (!gameStarted || gameplayBlocked()
     || (event.target instanceof HTMLButtonElement && event.target.getClientRects().length > 0
       && ['Space', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code))) return;
   if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)) event.preventDefault();
   keys.add(event.code);
   if (event.repeat) return;
+  const shortcuts: Partial<Record<string, SelectedWeapon>> = { Digit1: 'fists', Digit2: 'saw', Digit3: 'axe', Digit4: 'pickaxe' };
+  const shortcut = shortcuts[event.code];
+  if (shortcut && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    if (!driving && !buildMode && toolMode === 'normal') selectWeapon(shortcut);
+    return;
+  }
   if (event.code === 'KeyB') toggleBuild();
   if (event.code === 'KeyI') document.querySelector<HTMLButtonElement>('#inventoryButton')!.click();
   if (event.code === 'KeyE') interact();
@@ -1339,24 +1348,33 @@ document.querySelector('#toolHubButton')!.addEventListener('click', () => {
   setToolHub(open);
 });
 document.querySelector('#closeToolHub')!.addEventListener('click', () => setToolHub(false));
-document.querySelectorAll<HTMLButtonElement>('[data-hub]').forEach(button => button.addEventListener('click', () => {
-  const mode = button.dataset.hub!;
-  if (mode === 'axe' && !tools.includes('axe')) {
-    toast('Craft an axe in Pack first');
-    return;
+function equipWeapon(weapon: SelectedWeapon): boolean {
+  if (!canEquipTool(weapon, tools)) {
+    toast(weapon === 'axe' ? 'Craft an axe in Pack first' : 'Craft a pickaxe in Pack first');
+    return false;
   }
+  selectedWeapon = weapon;
+  animationActionTime = 0;
+  gatherHintTimer = 0;
+  updateWeaponControl();
+  updateGatherHint(0);
+  animateCharacter(player, 0, 0);
+  return true;
+}
+function selectWeapon(weapon: SelectedWeapon) {
+  if (!equipWeapon(weapon)) return;
   setToolHub(false);
   closeResourceDetails();
-  if (mode === 'build') toggleBuild();
-  else if (mode === 'road') enterRoadTool();
+  toast(`${weapon === 'stones' ? 'Throwing stones' : weapon} selected`);
+  void saveGame(false);
+}
+document.querySelectorAll<HTMLButtonElement>('[data-hub]').forEach(button => button.addEventListener('click', () => {
+  const mode = button.dataset.hub!;
+  if (mode === 'road' || mode === 'terrain' || mode === 'paint') setToolHub(false);
+  if (mode === 'road') enterRoadTool();
   else if (mode === 'terrain') enterTerrainTool();
   else if (mode === 'paint') enterPaintTool();
-  else {
-    selectedWeapon = mode as SelectedWeapon;
-    updateWeaponControl();
-    toast(`${selectedWeapon === 'stones' ? 'Throwing stones' : selectedWeapon} selected`);
-    void saveGame(false);
-  }
+  else selectWeapon(mode as SelectedWeapon);
 }));
 document.querySelector('#resourceToggle')!.addEventListener('click', event => {
   const toggle = event.currentTarget as HTMLButtonElement;
@@ -1408,6 +1426,7 @@ document.querySelectorAll<HTMLButtonElement>('[data-craft]').forEach(button => b
   const tool = button.dataset.craft as Tool;
   if (tools.includes(tool)) { toast('Already crafted'); return; }
   if (!craftTool(resources, tools, tool)) { toast('Not enough resources'); return; }
+  equipWeapon(tool);
   updateResources();
   toast(`${tool} crafted`);
   void saveGame(false);
@@ -2283,11 +2302,14 @@ function updateWeaponControl() {
     button.classList.toggle('selected', selected);
     button.setAttribute('aria-pressed', String(selected));
   });
-  const axe = document.querySelector<HTMLButtonElement>('[data-hub="axe"]')!;
-  const needsAxe = !tools.includes('axe');
-  axe.classList.toggle('needs-crafting', needsAxe);
-  axe.setAttribute('aria-label', needsAxe ? 'Axe, craft in Pack first' : 'Axe');
-  axe.querySelector('span')!.textContent = needsAxe ? 'Craft axe' : 'Axe';
+  for (const tool of ['axe', 'pickaxe'] as const) {
+    const button = document.querySelector<HTMLButtonElement>(`[data-hub="${tool}"]`)!;
+    const needsCrafting = !tools.includes(tool);
+    const name = tool === 'axe' ? 'Axe' : 'Pickaxe';
+    button.classList.toggle('needs-crafting', needsCrafting);
+    button.setAttribute('aria-label', needsCrafting ? `${name}, craft in Pack first` : name);
+    button.querySelector('span')!.textContent = needsCrafting ? `Craft ${tool}` : name;
+  }
   document.querySelector('#weaponLabel')!.textContent = selectedWeapon === 'stones' ? 'Stone'
     : selectedWeapon === 'saw' ? 'Attack' : selectedWeapon[0].toUpperCase() + selectedWeapon.slice(1);
   const ammo = document.querySelector<HTMLElement>('#weaponAmmo')!;
@@ -2416,11 +2438,12 @@ function updateGatherHint(dt: number) {
   if (target?.kind === 'deposit') {
     const mineral = target.object.userData.mineral as DepositKind;
     const name = depositNames[mineral];
-    const needsPickaxe = requiresPickaxe(mineral) && !tools.includes('pickaxe');
+    const requirement = miningToolRequirement(mineral, tools.includes('pickaxe'), selectedWeapon === 'pickaxe');
     const verb = requiresPickaxe(mineral) ? 'mine' : 'gather';
-    label = name[0].toUpperCase() + name.slice(1);
-    accessible = `${verb[0].toUpperCase()}${verb.slice(1)} ${name}${needsPickaxe ? ', pickaxe required' : ''}`;
-    gatherHint = needsPickaxe ? `${name} (pickaxe required)` : `${verb} ${name}`;
+    label = requirement === 'equip' ? 'Equip pickaxe' : name[0].toUpperCase() + name.slice(1);
+    accessible = `${verb[0].toUpperCase()}${verb.slice(1)} ${name}${requirement === 'craft' ? ', pickaxe required' : requirement === 'equip' ? ', select pickaxe in Tools' : ''}`;
+    gatherHint = requirement === 'craft' ? `${name} (pickaxe required)`
+      : requirement === 'equip' ? `${name} (select pickaxe in Tools)` : `${verb} ${name}`;
   } else if (target?.object.userData.resource === 'wood') {
     const tree = target.object;
     const harvest = world.treeHarvestState(tree);
@@ -2466,11 +2489,16 @@ function gather(includeCombat = true) {
   const target = nearestGatherTarget();
   if (target?.kind === 'deposit') {
     if (attackCooldown > 0) return;
-    const result = world.mineDeposit(target.object, tools.includes('pickaxe'));
+    const requirement = miningToolRequirement(target.object.userData.mineral as DepositKind, tools.includes('pickaxe'), selectedWeapon === 'pickaxe');
+    if (requirement) {
+      toast(requirement === 'craft' ? 'Craft a pickaxe to mine this deposit' : 'Select the pickaxe in Tools to mine this deposit');
+      return;
+    }
+    const result = world.mineDeposit(target.object, selectedWeapon === 'pickaxe' && tools.includes('pickaxe'));
     if (!result) return;
     if (result.needsPickaxe) { toast('Craft a pickaxe to mine this deposit'); return; }
     attackCooldown = 0.6;
-    animationAction = 'mine';
+    animationAction = selectedWeapon === 'pickaxe' ? 'mine' : 'gather';
     animationActionTime = 0.6;
     effects.burst(result.position.clone().add(new THREE.Vector3(0, 0.6, 0)), 'stone');
     onboarding.gathered = true;
@@ -2517,7 +2545,7 @@ function gather(includeCombat = true) {
   }
   const found = world.gatherNearest(player.position.x, player.position.z, 3.2);
   if (!found) { toast('Move closer to a tree, rock, or berry bush'); return; }
-  animationAction = found.resource === 'stone' ? 'mine' : 'chop';
+  animationAction = found.resource === 'stone' && selectedWeapon === 'pickaxe' ? 'mine' : 'gather';
   animationActionTime = 0.6;
   const amount = found.resource === 'wood' ? (tools.includes('axe') ? 5 : 3)
     : found.resource === 'stone' && tools.includes('pickaxe') ? 4 : 2;
@@ -3875,7 +3903,7 @@ function updateNpc(dt: number) {
 
 function animateCharacter(character: THREE.Group, dt: number, movement: number, running = false, action?: typeof animationAction, carrying = false, actionTime = animationActionTime) {
   const attackTool = character === player ? selectedWeapon === 'axe' ? 'chop' : selectedWeapon === 'stick' ? 'stick'
-    : selectedWeapon === 'saw' ? 'saw' : null : character.userData.enemy ? 'weapon' : null;
+    : selectedWeapon === 'saw' ? 'saw' : selectedWeapon === 'pickaxe' ? 'mine' : null : character.userData.enemy ? 'weapon' : null;
   const sawTarget: unknown = character.userData.sawTarget;
   if (updateAuthoredCharacter(character, dt, movement, running, action, carrying, attackTool,
     sawTarget instanceof THREE.Vector3 ? sawTarget : undefined)) return;

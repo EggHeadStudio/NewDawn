@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { canPlace, placementProblem, craftTool, daylightAt, isNight, spend, type Inventory, type Tool } from './gameplay';
+import { canEquipTool, canPlace, placementProblem, craftTool, daylightAt, isNight, spend, type Inventory, type Tool } from './gameplay';
+import { depositKinds, miningToolRequirement } from './economy';
 import { World } from './world';
 
 describe('playable loop', () => {
@@ -33,6 +34,27 @@ describe('playable loop', () => {
     expect(inventory.stone).toBe(2);
     expect(craftTool(inventory, tools, 'axe')).toBe(false);
     expect(inventory.wood).toBe(3);
+  });
+  it('does not equip unowned tools and crafting unlocks only the paid tool', () => {
+    const inventory: Inventory = { wood: 2, stone: 3, food: 0, water: 0 };
+    const tools: Tool[] = [];
+    expect(canEquipTool('pickaxe', tools)).toBe(false);
+    expect(canEquipTool('axe', tools)).toBe(false);
+    expect(canEquipTool('saw', tools)).toBe(true);
+    expect(craftTool(inventory, tools, 'pickaxe')).toBe(true);
+    expect(canEquipTool('pickaxe', tools)).toBe(true);
+    expect(canEquipTool('axe', tools)).toBe(false);
+    expect(craftTool(inventory, tools, 'pickaxe')).toBe(false);
+    expect(tools).toEqual(['pickaxe']);
+    expect(inventory).toEqual({ wood: 0, stone: 0, food: 0, water: 0 });
+  });
+  it('distinguishes a missing pickaxe from an unequipped one without gating soft deposits', () => {
+    for (const mineral of depositKinds) {
+      const soft = mineral === 'clay' || mineral === 'sand';
+      expect(miningToolRequirement(mineral, false, false)).toBe(soft ? null : 'craft');
+      expect(miningToolRequirement(mineral, true, false)).toBe(soft ? null : 'equip');
+      expect(miningToolRequirement(mineral, true, true)).toBeNull();
+    }
   });
   it('has a dark night and bright midday', () => {
     expect(isNight(0)).toBe(true);

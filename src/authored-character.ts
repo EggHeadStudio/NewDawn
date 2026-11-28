@@ -242,6 +242,11 @@ export function attachAuthoredCharacter(root: THREE.Group, appearance: Character
           const tool = fallback.clone();
           tool.traverse(object => { object.userData.authoredShared = true; });
           tool.position.set(0, 0, 0);
+          if (kind === 'mine') {
+            tool.position.y = 0.06;
+            // The authored hand's +Y points towards the fingers, not up the shaft.
+            tool.rotation.x = Math.PI - 0.5;
+          }
           tool.visible = false;
           hand.add(tool);
           avatar.tools.set(kind, tool);
@@ -292,7 +297,7 @@ export function setAuthoredBackpackVisible(root: THREE.Group, visible: boolean) 
   if (avatar.backpack) avatar.backpack.visible = visible;
 }
 
-export function updateAuthoredCharacter(root: THREE.Group, dt: number, movement: number, running: boolean, action: Action, carrying: boolean, attackTool: 'weapon' | 'chop' | 'stick' | 'saw' | null = null, sawTarget?: THREE.Vector3) {
+export function updateAuthoredCharacter(root: THREE.Group, dt: number, movement: number, running: boolean, action: Action, carrying: boolean, attackTool: HeldTool | null = null, sawTarget?: THREE.Vector3) {
   const avatar = root.userData.authoredAvatar as Avatar | undefined;
   if (!avatar || avatar.disposed || !avatar.mixers.length) return false;
   const name = authoredAnimation(movement, running, action, carrying);

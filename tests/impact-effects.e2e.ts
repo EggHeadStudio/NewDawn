@@ -81,6 +81,7 @@ test('real wood, stone and combat contacts emit bounded material effects', async
   await page.screenshot({ path: join(directory, 'wood.png') });
 
   await positionAt(page, { x: deposit.x + 1, z: deposit.z + 0.5 });
+  await page.keyboard.press('4');
   await page.keyboard.press('Space');
   await expect.poll(async () => (await state(page)).lastImpactEffect).toBe('stone');
   expect((await state(page)).impactEffects).toBeGreaterThan(0);

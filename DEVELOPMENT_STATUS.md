@@ -1,5 +1,13 @@
 # Development status
 
+## Phase 1B — equipped tools
+
+- Tools now includes the crafted pickaxe, with the selected icon and existing hand model. Successful axe or pickaxe crafting equips it immediately through the same ownership-checked selection path. Hard deposits require an owned, selected pickaxe; feedback distinguishes crafting from equipping. Clay/sand, finite mining progress, the doubled iron-pickaxe yield and independent torch state remain.
+- Desktop **1-4** selects fists, saw, axe and pickaxe; unavailable tools cannot be selected. Text inputs, textareas and editable content are protected. Version-13 saves persist pickaxe selection only with ownership; older saved selections and legacy axe migration are retained.
+- **292/292 units**, the production build and **313/313** serial Chrome browser cases pass. Focused equipment/mining/torch/contact checks passed **14/14**, followed by **5/5** mining/smelting checks after correcting the authored pickaxe grip. Application/test source remained unchanged throughout the full run, and all **730** protected historical image hashes still match.
+- Inspected normal-distance gameplay: pickaxe [desktop](art-review/phase-1b/pickaxe-desktop.png), [portrait](art-review/phase-1b/pickaxe-portrait.png), [landscape](art-review/phase-1b/pickaxe-landscape.png), [reload](art-review/phase-1b/pickaxe-reloaded.png), [naturally crafted axe](art-review/phase-1b/axe-desktop.png) and [pickaxe with torch](art-review/phase-1b/pickaxe-torch.png). The three deposit scenes use saved position/material fixtures; the axe and torch journeys gather their materials normally.
+- The hairstyle reference image is still absent, so Taru's existing bun was not changed or claimed to match it. Physical devices were not tested. This batch does not complete A3.2 or the disabled rover collision work.
+
 ## Phase 1A — mobile controls, menus and Taru
 
 - The rover's mobile action pad now includes an accessible exit icon; attempts to exit above **0.3 m/s** forward or reverse show a stop hint. The joystick and driving pedals work simultaneously; brake takes priority over gas. Desktop key bindings remain unchanged, with the same safety guard. Normal/large mobile button sizing persists separately in localStorage and does not change saves.

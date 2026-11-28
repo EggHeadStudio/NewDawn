@@ -15,7 +15,27 @@ type TestSave = {
   tools: string[];
   ingots: { iron: number; copper: number };
   ironPickaxe: boolean;
+  selectedWeapon?: string;
 };
+
+async function readSave(page: Page) {
+  return page.evaluate(() => new Promise<TestSave>((resolve, reject) => {
+    const request = indexedDB.open('new-dawn', 1);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const get = db.transaction('saves').objectStore('saves').get('primary');
+      get.onerror = () => reject(get.error);
+      get.onsuccess = () => { resolve(get.result); db.close(); };
+    };
+  }));
+}
+
+async function equipment(page: Page) {
+  return page.evaluate(() => (window as Window & { __newDawnState: () => {
+    selectedWeapon: string; characterVisual: { heldTools: string[] };
+  } }).__newDawnState());
+}
 
 async function save(page: Page) {
   await page.locator('#pauseButton').click();
@@ -32,7 +52,12 @@ for (const viewport of [
   test.describe(viewport.name, () => {
     test.use({ viewport: { width: viewport.width, height: viewport.height }, hasTouch: viewport.touch, isMobile: viewport.touch });
 
-    test('crafts a pickaxe and mines a finite deposit across reloads', async ({ page }) => {
+    test('crafts and equips a pickaxe and mines a finite deposit across reloads', async ({ page }, testInfo) => {
+      test.setTimeout(180000);
+      const activate = async (selector: string) => {
+        if (viewport.touch) await page.locator(selector).tap();
+        else await page.locator(selector).click();
+      };
       await page.goto('./');
       await page.locator('#newGame').click();
       await save(page);
@@ -78,21 +103,73 @@ for (const viewport of [
       await page.locator('#continueGame').click();
       await expect(page.locator('#pauseButton')).toBeVisible();
       const gather = async () => {
-        if (viewport.touch) await page.locator('#actionA').click();
+        if (viewport.touch) await page.locator('#actionA').tap();
         else await page.keyboard.press('Space');
       };
       await gather();
       await expect(page.locator('#toast')).toHaveText('Craft a pickaxe to mine this deposit');
-      await page.locator('#toolHubButton').click();
-      await page.locator('#inventoryButton').click();
-      await page.locator('[data-craft="pickaxe"]').click();
-      await page.locator('#closeCraft').click();
+      if (!viewport.touch) {
+        await page.keyboard.press('4');
+        await expect(page.locator('#toast')).toHaveText('Craft a pickaxe in Pack first');
+        expect((await equipment(page)).selectedWeapon).toBe('fists');
+      }
+      await page.screenshot({ path: testInfo.outputPath('pickaxe-before.png') });
+      await activate('#toolHubButton');
+      await expect(page.locator('[data-hub="pickaxe"]')).toHaveAccessibleName('Pickaxe, craft in Pack first');
+      await activate('#inventoryButton');
+      await activate('[data-craft="pickaxe"]');
+      await expect(page.locator('#panelNotification')).toHaveText('pickaxe crafted');
+      await expect(page.locator('[data-craft="pickaxe"]')).toBeDisabled();
+      await activate('#closeCraft');
+      await expect(page.locator('#toolHubButton')).toHaveAttribute('aria-label', 'Open tools, pickaxe selected');
+      await expect(page.locator('#actionA')).toHaveAttribute('aria-label', 'Mine iron ore');
+      await expect.poll(async () => (await equipment(page)).characterVisual.heldTools, { timeout: 30000 }).toEqual(['mine']);
+      await page.screenshot({ path: testInfo.outputPath('pickaxe-equipped.png') });
+      if (!viewport.touch) {
+        for (const tag of ['input', 'textarea', 'div']) {
+          await page.evaluate(tag => {
+            const editor = document.createElement(tag);
+            editor.id = 'shortcut-editor';
+            if (tag === 'div') editor.contentEditable = 'true';
+            document.body.append(editor);
+            editor.focus();
+          }, tag);
+          await page.keyboard.press('1');
+          expect((await equipment(page)).selectedWeapon).toBe('pickaxe');
+          await page.evaluate(() => document.querySelector('#shortcut-editor')!.remove());
+        }
+        await page.keyboard.press('2');
+        expect((await equipment(page)).selectedWeapon).toBe('saw');
+        await page.keyboard.press('4');
+        expect((await equipment(page)).selectedWeapon).toBe('pickaxe');
+      }
+      await activate('#toolHubButton');
+      await activate('[data-hub="fists"]');
+      await expect(page.locator('#actionA')).toHaveAttribute('aria-label', 'Mine iron ore, select pickaxe in Tools');
+      await gather();
+      await expect(page.locator('#toast')).toHaveText('Select the pickaxe in Tools to mine this deposit');
+      await save(page);
+      const unequipped = await readSave(page);
+      expect(unequipped.selectedWeapon).toBe('fists');
+      expect(unequipped.tools).toEqual(['pickaxe']);
+      expect(unequipped.resources).toMatchObject({ wood: 0, stone: 0 });
+      expect(unequipped.mining[fixture.id]).toBeUndefined();
+      expect(unequipped.minerals.ironOre).toBe(0);
+      await page.reload();
+      await activate('#continueGame');
+      await expect(page.locator('#toolHubButton')).toHaveAttribute('aria-label', 'Open tools, fists selected');
+      await activate('#toolHubButton');
+      await activate('[data-hub="pickaxe"]');
+      await expect(page.locator('#actionA')).toHaveAttribute('aria-label', 'Mine iron ore');
       await gather();
       await expect(page.locator('#toast')).toHaveText('+1 ironOre · 1/3');
       await save(page);
       await page.reload();
       await page.locator('#continueGame').click();
       await expect(page.locator('#pauseButton')).toBeVisible();
+      await expect(page.locator('#toolHubButton')).toHaveAttribute('aria-label', 'Open tools, pickaxe selected');
+      await expect.poll(async () => (await equipment(page)).characterVisual.heldTools, { timeout: 30000 }).toEqual(['mine']);
+      await page.screenshot({ path: testInfo.outputPath('pickaxe-reloaded.png') });
       await page.locator('#toolHubButton').click();
       await page.locator('#inventoryButton').click();
       await expect(page.locator('#mineralInventory')).toContainText('iron ore 1');
@@ -103,16 +180,8 @@ for (const viewport of [
       await gather();
       await expect(page.locator('#toast')).toHaveText('+1 ironOre · 3/3');
       await save(page);
-      const saved = await page.evaluate(() => new Promise<TestSave>((resolve, reject) => {
-        const request = indexedDB.open('new-dawn', 1);
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => {
-          const db = request.result;
-          const get = db.transaction('saves').objectStore('saves').get('primary');
-          get.onerror = () => reject(get.error);
-          get.onsuccess = () => { resolve(get.result); db.close(); };
-        };
-      }));
+      const saved = await readSave(page);
+      expect(saved.selectedWeapon).toBe('pickaxe');
       expect(saved.minerals.ironOre).toBe(3);
       expect(saved.mining[fixture.id]).toBe(3);
       expect(saved.resources).toMatchObject({ wood: 0, stone: 0 });
@@ -266,6 +335,8 @@ test('builds a smelter, resumes a fuelled job after reload and forges an iron pi
   await page.reload();
   await page.locator('#continueGame').click();
   await expect(page.locator('#pauseButton')).toBeVisible();
+  await page.locator('#toolHubButton').click();
+  await page.locator('[data-hub="pickaxe"]').click();
   if (viewport.touch) await page.locator('#actionA').tap();
   else await page.keyboard.press('Space');
   await expect(page.locator('#toast')).toHaveText('+2 ironOre · 1/3');

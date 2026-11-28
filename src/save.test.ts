@@ -155,6 +155,9 @@ describe('saved worlds', () => {
         '9,3': { phase: 'logs', remaining: 5, total: 12, direction: -0.5 } },
       npcState: { recruited: true, job: 'wood', carrying: 'wood', carryingAmount: 2 } };
     expect(isSaveData(save)).toBe(true);
+    expect(isSaveData({ ...save, selectedWeapon: 'pickaxe', tools: ['pickaxe'] })).toBe(true);
+    expect(isSaveData({ ...save, selectedWeapon: 'pickaxe', tools: [] })).toBe(false);
+    expect(isSaveData({ ...save, version: 12, selectedWeapon: 'pickaxe', tools: ['pickaxe'] })).toBe(false);
     expect(isSaveData({ ...save, version: 12 })).toBe(false);
     expect(isSaveData({ ...save, version: 14 })).toBe(false);
     expect(isSaveData({ ...save, treeHarvest: undefined })).toBe(false);

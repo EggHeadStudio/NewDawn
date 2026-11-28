@@ -1,4 +1,4 @@
-import { buildingCosts, type BuildingKind, type Inventory, type Tool } from './gameplay';
+import { buildingCosts, type BuildingKind, type HandTool, type Inventory, type Tool } from './gameplay';
 import type { Outfit } from './assets';
 import type { NpcState } from './npc';
 import { safeSpawn } from './world';
@@ -39,7 +39,7 @@ export interface SaveData {
   paint?: SurfacePaint[];
   atlas?: AtlasState;
   stones?: number;
-  selectedWeapon?: 'fists' | 'stick' | 'axe' | 'stones' | 'saw';
+  selectedWeapon?: HandTool;
   axeRequiresCrafting?: true;
   backpackEquipped?: boolean;
   onboarding?: OnboardingState;
@@ -188,7 +188,7 @@ export function isSaveData(value: unknown): value is SaveData {
     if (value.version >= 11 && !isAtlasState(value.atlas)) return false;
   }
   if (value.stones !== undefined && (!isNumber(value.stones) || !Number.isInteger(value.stones) || value.stones < 0 || value.stones > 100000)) return false;
-  if (value.selectedWeapon !== undefined && !['fists', 'stick', 'axe', 'stones', ...(version >= 13 ? ['saw'] : [])].includes(String(value.selectedWeapon))) return false;
+  if (value.selectedWeapon !== undefined && !['fists', 'stick', 'axe', 'stones', ...(version >= 13 ? ['saw', 'pickaxe'] : [])].includes(String(value.selectedWeapon))) return false;
   if (value.backpackEquipped !== undefined && typeof value.backpackEquipped !== 'boolean') return false;
   if (value.onboarding !== undefined && !isOnboardingState(value.onboarding)) return false;
   if (value.version >= 8 && (!isMineralInventory(value.minerals) || !isIngots(value.ingots, value.version >= 9)
@@ -212,6 +212,8 @@ export function isSaveData(value: unknown): value is SaveData {
   if (value.axeRequiresCrafting !== undefined && value.axeRequiresCrafting !== true) return false;
   if (value.axeRequiresCrafting === true && value.selectedWeapon === 'axe'
     && (!Array.isArray(value.tools) || !value.tools.includes('axe'))) return false;
+  if (value.selectedWeapon === 'pickaxe'
+    && (!Array.isArray(value.tools) || !value.tools.includes('pickaxe'))) return false;
   if (value.npcState !== undefined) {
     if (!isObject(value.npcState) || typeof value.npcState.recruited !== 'boolean'
       || !['idle', 'wood', 'stone'].includes(String(value.npcState.job))

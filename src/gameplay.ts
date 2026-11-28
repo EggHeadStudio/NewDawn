@@ -3,6 +3,12 @@ export type Inventory = Record<Resource, number>;
 export type BuildingKind = 'shelter' | 'storage' | 'lamp' | 'generator' | 'turbine' | 'battery' | 'cable' | 'smelter' | 'torchpost';
 export type Cost = Partial<Inventory>;
 export type Tool = 'axe' | 'pickaxe';
+export type HandTool = 'fists' | 'stick' | 'axe' | 'stones' | 'saw' | 'pickaxe';
+
+export function canEquipTool(tool: HandTool, tools: readonly Tool[]): boolean {
+  return tool !== 'axe' && tool !== 'pickaxe' || tools.includes(tool);
+}
+
 export const toolCosts: Record<Tool, Cost> = {
   axe: { wood: 3, stone: 2 },
   pickaxe: { wood: 2, stone: 3 },

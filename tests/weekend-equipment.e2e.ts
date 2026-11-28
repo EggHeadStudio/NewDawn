@@ -159,6 +159,19 @@ for (const viewport of [
       await expect(page.locator('[data-craft="axe"]')).toBeDisabled();
       await page.screenshot({ path: testInfo.outputPath('axe-crafted.png') });
       await activate('#closeCraft');
+      await expect(page.locator('#toolHubButton')).toHaveAttribute('aria-label', 'Open tools, axe selected');
+      await expect.poll(async () => (await state(page)).characterVisual.heldTools, { timeout: 30000 }).toEqual(['chop']);
+      if (!viewport.touch) {
+        await page.keyboard.press('1');
+        expect((await state(page)).selectedWeapon).toBe('fists');
+        await page.keyboard.press('2');
+        expect((await state(page)).selectedWeapon).toBe('saw');
+        await page.keyboard.press('3');
+        expect((await state(page)).selectedWeapon).toBe('axe');
+        await page.keyboard.press('4');
+        await expect(page.locator('#toast')).toHaveText('Craft a pickaxe in Pack first');
+        expect((await state(page)).selectedWeapon).toBe('axe');
+      }
       await activate('#toolHubButton');
       await expect(axe).not.toHaveClass(/needs-crafting/);
       await expect(axe).toHaveAccessibleName('Axe');

@@ -12,6 +12,11 @@ export function requiresPickaxe(mineral: DepositKind) {
   return mineral !== 'clay' && mineral !== 'sand';
 }
 
+export function miningToolRequirement(mineral: DepositKind, hasPickaxe: boolean, equipped: boolean): 'craft' | 'equip' | null {
+  if (!requiresPickaxe(mineral)) return null;
+  return !hasPickaxe ? 'craft' : !equipped ? 'equip' : null;
+}
+
 export function isMineralInventory(value: unknown): value is MineralInventory {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
